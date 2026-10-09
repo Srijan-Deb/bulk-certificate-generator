@@ -3,12 +3,22 @@ Certificate Generation Engine
 Renders high-resolution, vector-quality PDF certificates using ReportLab.
 Uses a predefined, elegant landscape template with decorative borders,
 institutional seal graphic, and recipient metadata.
+
+Features:
+- Dynamic font auto-scaling for long recipient names and event titles.
+- Cryptographic verification code generation.
+- Post-generation PDF integrity verification via pypdf.
+- Path sanitization and overwrite protection.
+- Unicode character normalization.
 """
 
+import hashlib
 import logging
+import unicodedata
 import uuid
 from pathlib import Path
 
+import pypdf
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.pdfgen import canvas
@@ -43,11 +53,34 @@ class CertificateGenerator:
         # Formatted as CERT-XXXX-XXXX-XXXX
         return f"{prefix}-{short_uuid[0:4]}-{short_uuid[4:8]}-{short_uuid[8:12]}"
 
+    @staticmethod
+    def generate_verification_code(job_id: str, certificate_id: str, recipient_name: str) -> str:
+        """
+        Generates a deterministic 16-character SHA-256 verification code
+        binding the certificate to the job and recipient.
+        """
+        payload = f"{job_id}:{certificate_id}:{recipient_name}".encode("utf-8")
+        raw_hash = hashlib.sha256(payload).hexdigest().upper()
+        # Formatted as V-XXXX-XXXX-XXXX
+        return f"V-{raw_hash[0:4]}-{raw_hash[4:8]}-{raw_hash[8:12]}"
+
+    @staticmethod
+    def sanitize_text(text: str) -> str:
+        """
+        Normalizes unicode text to Latin-1/ASCII compatible representation
+        while preserving standard accents to ensure safe PDF rendering.
+        """
+        if not text:
+            return ""
+        # Normalize unicode combining characters
+        normalized = unicodedata.normalize("NFKC", text.strip())
+        return "".join(c for c in normalized if ord(c) < 256)
+
     def get_certificate_path(self, job_id: str, certificate_id: str) -> Path:
         """Returns safe, deterministic destination path for certificate PDF."""
         job_dir = self.output_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
-        # Sanitize filename
+        # Sanitize filename to alphanumeric and safe hyphens
         safe_cert_id = "".join(c for c in certificate_id if c.isalnum() or c in ("-", "_"))
         return job_dir / f"{safe_cert_id}.pdf"
 
@@ -61,21 +94,39 @@ class CertificateGenerator:
         issue_date: str,
         certificate_title: str = "Certificate of Completion",
         custom_remarks: str | None = None,
+        verification_code: str | None = None,
+        allow_overwrite: bool = True,
     ) -> Path:
         """
-        Draws and saves the PDF certificate.
-        Raises RuntimeError on generation failure to be handled by the caller.
+        Draws, verifies, and saves the PDF certificate.
+        Includes dynamic font scaling, verification code, and pypdf validation.
+        Raises RuntimeError on generation failure.
         """
         file_path = self.get_certificate_path(job_id, certificate_id)
 
-        # Dimensions: A4 Landscape is 841.89 x 595.27 points
+        # Overwrite protection check
+        if file_path.exists() and not allow_overwrite:
+            raise FileExistsError(f"Certificate file '{file_path}' already exists.")
+
+        # Sanitize input strings for PDF rendering
+        clean_recipient = self.sanitize_text(recipient_name)
+        clean_event = self.sanitize_text(event_name)
+        clean_issuer = self.sanitize_text(issuer_name)
+        clean_title = self.sanitize_text(certificate_title)
+        clean_date = self.sanitize_text(issue_date)
+        clean_remarks = self.sanitize_text(custom_remarks) if custom_remarks else None
+
+        # Compute verification code if not provided
+        v_code = verification_code or self.generate_verification_code(job_id, certificate_id, clean_recipient)
+
+        # Canvas Dimensions: A4 Landscape is 841.89 x 595.27 points
         page_width, page_height = landscape(A4)
         c = canvas.Canvas(str(file_path), pagesize=(page_width, page_height))
-        c.setTitle(f"{certificate_title} - {recipient_name}")
-        c.setAuthor(issuer_name)
-        c.setSubject(event_name)
+        c.setTitle(f"{clean_title} - {clean_recipient}")
+        c.setAuthor(clean_issuer)
+        c.setSubject(clean_event)
 
-        # Color Palette
+        # Curated Color Palette
         navy_dark = colors.HexColor("#0F172A")
         navy_light = colors.HexColor("#1E293B")
         gold_accent = colors.HexColor("#D97706")
@@ -120,12 +171,12 @@ class CertificateGenerator:
         # 5. Header: Issuing Organization
         c.setFillColor(gold_accent)
         c.setFont("Helvetica-Bold", 13)
-        c.drawCentredString(page_width / 2.0, page_height - 75, issuer_name.upper())
+        c.drawCentredString(page_width / 2.0, page_height - 75, clean_issuer.upper())
 
         # 6. Certificate Title
         c.setFillColor(navy_dark)
         c.setFont("Helvetica-Bold", 28)
-        c.drawCentredString(page_width / 2.0, page_height - 118, certificate_title.upper())
+        c.drawCentredString(page_width / 2.0, page_height - 118, clean_title.upper())
 
         # Title Accent Line
         c.setStrokeColor(gold_accent)
@@ -143,15 +194,21 @@ class CertificateGenerator:
         c.setFont("Helvetica", 12)
         c.drawCentredString(page_width / 2.0, page_height - 165, "THIS IS PROUDLY PRESENTED TO")
 
-        # 8. Recipient Name (Prominent & Elegant)
+        # 8. Recipient Name with Dynamic Auto-Scaling for Long Names
+        max_name_width = page_width - (2 * (margin + 60))
+        name_font_size = 30
+        font_name = "Helvetica-Bold"
+        while c.stringWidth(clean_recipient, font_name, name_font_size) > max_name_width and name_font_size > 14:
+            name_font_size -= 2
+
         c.setFillColor(navy_dark)
-        c.setFont("Helvetica-Bold", 30)
-        c.drawCentredString(page_width / 2.0, page_height - 215, recipient_name)
+        c.setFont(font_name, name_font_size)
+        c.drawCentredString(page_width / 2.0, page_height - 215, clean_recipient)
 
         # Underline for Recipient Name
         c.setStrokeColor(gold_light)
         c.setLineWidth(1)
-        name_line_half_len = 160
+        name_line_half_len = min(220, max(120, int(c.stringWidth(clean_recipient, font_name, name_font_size) / 2) + 20))
         c.line(
             (page_width / 2.0) - name_line_half_len,
             page_height - 225,
@@ -166,16 +223,21 @@ class CertificateGenerator:
             page_width / 2.0, page_height - 260, "for successful completion and mastery of the curriculum in"
         )
 
-        # 10. Event / Course Name
+        # 10. Event / Course Name with Dynamic Auto-Scaling
+        max_event_width = page_width - (2 * (margin + 50))
+        event_font_size = 18
+        while c.stringWidth(clean_event, "Helvetica-Bold", event_font_size) > max_event_width and event_font_size > 11:
+            event_font_size -= 1
+
         c.setFillColor(navy_light)
-        c.setFont("Helvetica-Bold", 18)
-        c.drawCentredString(page_width / 2.0, page_height - 295, event_name)
+        c.setFont("Helvetica-Bold", event_font_size)
+        c.drawCentredString(page_width / 2.0, page_height - 295, clean_event)
 
         # Optional Custom Remarks / Honors
-        if custom_remarks:
+        if clean_remarks:
             c.setFillColor(gold_accent)
             c.setFont("Helvetica-Oblique", 11)
-            c.drawCentredString(page_width / 2.0, page_height - 325, f"— {custom_remarks} —")
+            c.drawCentredString(page_width / 2.0, page_height - 325, f"— {clean_remarks} —")
 
         # 11. Official Seal / Badge Graphic (Center bottom vector drawing)
         seal_x = page_width / 2.0
@@ -204,7 +266,7 @@ class CertificateGenerator:
         c.drawCentredString(left_col_x, 88, "Date of Issuance")
         c.setFillColor(navy_dark)
         c.setFont("Helvetica-Bold", 10)
-        c.drawCentredString(left_col_x, 112, str(issue_date))
+        c.drawCentredString(left_col_x, 112, clean_date)
 
         # 13. Right Column: Authorized Signatory
         right_col_x = page_width - 130
@@ -216,24 +278,36 @@ class CertificateGenerator:
         c.drawCentredString(right_col_x, 88, "Authorized Signatory")
         c.setFillColor(navy_dark)
         c.setFont("Helvetica-Oblique", 11)
-        c.drawCentredString(right_col_x, 112, issuer_name)
+        c.drawCentredString(right_col_x, 112, clean_issuer)
 
-        # 14. Bottom Verification Banner (Unique ID & Integrity)
+        # 14. Bottom Verification Banner (Unique ID & Cryptographic Verification Code)
         c.setFillColor(slate_muted)
         c.setFont("Courier", 9)
-        verification_text = f"Certificate ID: {certificate_id}  |  Issued by {issuer_name}"
+        verification_text = f"Certificate ID: {certificate_id}  |  Verification Code: {v_code}  |  Issuer: {clean_issuer}"
         c.drawCentredString(page_width / 2.0, 42, verification_text)
 
-        # Save and verify
+        # Commit Canvas
         c.showPage()
         c.save()
 
-        # Post-generation assertion
+        # Step 15: Post-generation Verification (File size & Opening Validation)
         if not file_path.exists() or file_path.stat().st_size == 0:
             raise RuntimeError(f"PDF generation failed: Output file '{file_path}' was not written.")
 
+        # Validate that the generated PDF can be successfully opened and parsed
+        try:
+            reader = pypdf.PdfReader(str(file_path))
+            if len(reader.pages) < 1:
+                raise ValueError("Generated PDF has 0 readable pages.")
+        except Exception as exc:
+            if file_path.exists():
+                file_path.unlink()
+            raise RuntimeError(f"PDF validation failed: Generated file is corrupted ({exc})") from exc
+
         logger.debug(
-            "Successfully generated certificate PDF at %s (size: %d bytes)", file_path, file_path.stat().st_size
+            "Successfully generated and verified certificate PDF at %s (size: %d bytes)",
+            file_path,
+            file_path.stat().st_size,
         )
         return file_path
 

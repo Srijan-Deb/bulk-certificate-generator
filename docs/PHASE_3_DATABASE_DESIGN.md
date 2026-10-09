@@ -119,6 +119,7 @@ class JobStatus(str, Enum):
     COMPLETED_WITH_ERRORS = "COMPLETED_WITH_ERRORS"
     FAILED = "FAILED"
 
+
 class CertificateStatus(str, Enum):
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
@@ -197,10 +198,10 @@ We configure SQLite at engine initialization using SQLAlchemy event hooks in [`a
 def set_sqlite_pragma(dbapi_connection, connection_record):
     if settings.DATABASE_URL.startswith("sqlite"):
         cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")     # Write-Ahead Logging
-        cursor.execute("PRAGMA synchronous=NORMAL")   # Faster disk writes
-        cursor.execute("PRAGMA busy_timeout=5000")    # 5-second lock timeout
-        cursor.execute("PRAGMA foreign_keys=ON")      # Foreign key cascades
+        cursor.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging
+        cursor.execute("PRAGMA synchronous=NORMAL")  # Faster disk writes
+        cursor.execute("PRAGMA busy_timeout=5000")  # 5-second lock timeout
+        cursor.execute("PRAGMA foreign_keys=ON")  # Foreign key cascades
         cursor.close()
 ```
 
