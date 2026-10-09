@@ -30,7 +30,6 @@ A production-grade, fault-tolerant, interview-ready Bulk Certificate Generator B
 15. [Design Decisions & Trade-Offs](#-design-decisions--trade-offs)
 16. [Security Considerations](#-security-considerations)
 17. [Known Limitations & Future Improvements](#-known-limitations--future-improvements)
-18. [Interview Defense Guide](#-interview-defense-guide)
 
 ---
 
@@ -121,8 +120,6 @@ The application implements a **Layered Modular Monolith with an Asynchronous Dat
                      |   `./storage/certificates/{job}/`  |
                      +------------------------------------+
 ```
-
-Detailed high-resolution architectural diagrams are located in [`System Architecture and Design/`](System%20Architecture%20and%20Design/).
 
 ---
 
@@ -489,19 +486,6 @@ python scripts/cleanup_retention.py
 - **Future Improvement 2**: Direct cloud object storage streaming (Cloudflare R2 / AWS S3) via pre-signed URLs.
 - **Future Improvement 3**: Webhook notifications (`POST /webhook`) on job completion.
 
----
-
-## 🎤 Interview Defense & Technical Architecture Cheat Sheet
-
-### 1. The 60-Second Elevator Pitch
-> *"I designed and built the **Bulk Certificate Generator Backend API**, a production-grade, zero-cost backend service in Python, FastAPI, and SQLAlchemy 2.0 that ingests bulk recipient batches, validates schemas, and asynchronously renders vector-quality PDF certificates at approximately 40 certificates per second. Instead of relying on heavy headless browsers like Puppeteer or expensive SaaS APIs, I engineered a purely programmatic vector graphics engine using ReportLab with dynamic font auto-scaling and cryptographic verification codes. To guarantee durability without infrastructure costs, I implemented an asynchronous database-backed worker using atomic compare-and-swap SQL claiming and SQLite Write-Ahead Logging (WAL). This eliminates race conditions across concurrent workers, provides per-recipient fault isolation, and features automated crash recovery if a worker dies mid-batch."*
-
-### 2. Key Architecture Q&A
-- **Why Database-Backed Worker instead of Celery/Redis?** Ingesting a bulk job requires persisting SQL records and enqueuing tasks. Using Redis introduces a dual-write hazard (if SQL succeeds but Redis fails, state desynchronizes). Our model inserts parent `GenerationJob` and all child `CertificateRecord` rows in a **single atomic ACID transaction**, with zero external broker costs and <60 MB RAM overhead.
-- **Why not FastAPI `BackgroundTasks`?** In-memory tasks are permanently destroyed if the server crashes, restarts, or redeploys. A database-backed worker guarantees full disk persistence before returning `HTTP 202 Accepted`.
-- **How is worker race condition prevented?** Via Atomic Conditional SQL: `UPDATE generation_jobs SET status='PROCESSING' WHERE id=:id AND status='PENDING'`. Relational engines serialize row updates; only the winner receives `rowcount == 1`.
-- **How does SQLite avoid locks?** `PRAGMA journal_mode=WAL;` and `PRAGMA busy_timeout=5000;` allow non-blocking concurrent reads while writers append to the `-wal` log.
-- **What happens if 1 recipient fails out of 500?** Granular fault isolation marks only that recipient `FAILED`, increments `failed_count`, and continues. The batch concludes as `COMPLETED_WITH_ERRORS`.
 
 ---
 

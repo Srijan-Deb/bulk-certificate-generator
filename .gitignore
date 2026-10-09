@@ -45,7 +45,11 @@ coverage.xml
 .DS_Store
 Thumbs.db
 
-# Documentation & Assignment Reference files (excluded from repository)
+# Documentation, Architecture Diagrams & Reference files (excluded from repository)
 docs/
 PDFs/
 *.pdf
+System Architecture and Design/
+*INTERVIEW*
+*Interview*
+*interview*
