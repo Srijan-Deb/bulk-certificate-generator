@@ -3,7 +3,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0+-red.svg)](https://www.sqlalchemy.org/)
-[![Pytest](https://img.shields.io/badge/pytest-passed%2013%2F13-brightgreen.svg)](https://pytest.org/)
+[![Pytest](https://img.shields.io/badge/pytest-passed%2028%2F28-brightgreen.svg)](https://pytest.org/)
 [![Ruff](https://img.shields.io/badge/code%20style-ruff-black.svg)](https://github.com/astral-sh/ruff)
 [![Cost](https://img.shields.io/badge/infrastructure%20cost-%E2%82%B90%20(Zero--Cost)-green.svg)](#-zero-cost-financial-ledger)
 
@@ -376,10 +376,12 @@ pytest -v
 ```
 
 ### Test Coverage Highlights
-- `test_validation.py`: Tests missing fields, empty arrays, whitespace sanitization, and invalid emails.
-- `test_pdf_generation.py`: Verifies valid vector PDF byte headers (`%PDF`), size thresholds, and unique IDs.
+- `test_validation.py`: Tests missing fields, empty arrays, whitespace sanitization, in-batch duplicate recipients, and invalid emails.
+- `test_pdf_generation.py`: Verifies valid vector PDF byte headers (`%PDF`), dynamic font auto-scaling, verification codes, and pypdf opening validation.
 - `test_job_lifecycle.py`: Tests the complete state machine: `PENDING` → `PROCESSING` → `COMPLETED`.
 - `test_failure_isolation.py`: Simulates an invalid recipient in a multi-recipient batch. Verifies that valid recipients generate without interruption and aggregate job finishes as `COMPLETED_WITH_ERRORS`.
+- `test_worker_recovery.py`: Tests crash recovery of stale jobs and atomic compare-and-swap concurrency deduplication.
+- `test_security.py`: Tests OWASP security headers, 10MB payload size limit, API key authentication, and path traversal prevention.
 - `test_retrieval.py`: Tests single PDF streaming, 404 handling, path traversal prevention, and ZIP decompression integrity.
 
 ### Code Quality & Linting
