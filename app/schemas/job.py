@@ -50,6 +50,21 @@ class BulkCreateJobRequest(BaseModel):
             raise ValueError("Field cannot be empty or whitespace.")
         return cleaned
 
+    @field_validator("recipients")
+    @classmethod
+    def validate_recipients_uniqueness(cls, recipients: list[RecipientInput]) -> list[RecipientInput]:
+        seen = set()
+        for idx, item in enumerate(recipients):
+            email_part = str(item.recipient_email).lower().strip() if item.recipient_email else ""
+            key = (item.recipient_name.lower().strip(), email_part)
+            if key in seen:
+                raise ValueError(
+                    f"Duplicate recipient detected at index {idx}: '{item.recipient_name}' "
+                    f"({item.recipient_email or 'no email'}). Each recipient within a batch must be unique."
+                )
+            seen.add(key)
+        return recipients
+
 
 class JobAcceptedResponse(BaseModel):
     job_id: str

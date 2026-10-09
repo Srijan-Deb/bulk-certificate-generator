@@ -8,7 +8,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +19,7 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.core.logging import setup_logging
 from app.db.base import Base
-from app.db.session import engine
+from app.db.session import engine, get_db
 from app.services.worker import worker
 
 # Initialize structured logging
@@ -144,3 +144,10 @@ def root():
         "docs": "/docs",
         "health": f"{settings.API_V1_PREFIX}/health",
     }
+
+
+@app.get("/health", include_in_schema=False)
+def health_alias(db=Depends(get_db)):
+    from app.api.v1.health import health_check
+
+    return health_check(db=db)

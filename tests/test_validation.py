@@ -48,3 +48,20 @@ def test_create_job_invalid_recipient_email(client):
     }
     response = client.post("/api/v1/jobs", json=payload)
     assert response.status_code == 422
+
+
+def test_create_job_duplicate_recipients(client):
+    payload = {
+        "event_name": "Web Development Bootcamp",
+        "issuer_name": "Dev Academy",
+        "issue_date": "2026-10-10",
+        "recipients": [
+            {"recipient_name": "Jane Doe", "recipient_email": "jane@example.com"},
+            {"recipient_name": "Jane Doe", "recipient_email": "jane@example.com"},
+        ],
+    }
+    response = client.post("/api/v1/jobs", json=payload)
+    assert response.status_code == 422
+    data = response.json()
+    assert data["error_code"] == "VALIDATION_ERROR"
+    assert "Duplicate recipient detected" in str(data["errors"])
