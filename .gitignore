@@ -26,6 +26,10 @@ ENV/
 storage/certificates/*
 !storage/certificates/.gitkeep
 generated_certificates/*
+!generated_certificates/.gitkeep
+backups/
+*.tar.gz
+*.zip
 
 # Testing & Coverage
 htmlcov/
