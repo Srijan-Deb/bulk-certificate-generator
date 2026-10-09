@@ -99,6 +99,29 @@ app.add_middleware(
 )
 
 
+# Security Headers & Request Body Size Limit Middleware
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > settings.MAX_PAYLOAD_SIZE_BYTES:
+        return JSONResponse(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            content={
+                "detail": f"Request payload exceeds allowable limit of {settings.MAX_PAYLOAD_SIZE_BYTES // (1024 * 1024)}MB.",
+                "error_code": "PAYLOAD_TOO_LARGE",
+            },
+        )
+
+    response = await call_next(request)
+
+    # Standard OWASP Defensive Security Headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
 # Global Exception Handlers
 @app.exception_handler(AppError)
 async def handle_app_error(request: Request, exc: AppError):

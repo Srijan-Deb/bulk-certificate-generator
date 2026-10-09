@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import get_db, verify_api_key
 from app.schemas.job import (
     BulkCreateJobRequest,
     JobAcceptedResponse,
@@ -26,7 +26,12 @@ router = APIRouter(prefix="/jobs", tags=["Jobs"])
     summary="Submit Bulk Certificate Generation Request",
     description="Accepts event metadata and a list of recipients, validates the payload, queues a persistent generation job, and immediately returns 202 Accepted with a status URL.",
 )
-def create_bulk_job(request: BulkCreateJobRequest, req: Request, db: Session = Depends(get_db)):
+def create_bulk_job(
+    request: BulkCreateJobRequest,
+    req: Request,
+    db: Session = Depends(get_db),
+    _api_key: str | None = Depends(verify_api_key),
+):
     job = job_service.create_bulk_job(db=db, request=request)
     status_url = str(req.url_for("get_job_status", job_id=job.id))
 

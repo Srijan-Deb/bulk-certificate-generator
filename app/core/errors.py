@@ -43,3 +43,8 @@ class StorageAccessError(AppError):
 class SecurityViolationError(AppError):
     def __init__(self, message: str = "Invalid file path or access request"):
         super().__init__(message=message, status_code=403)
+
+
+class AuthenticationError(AppError):
+    def __init__(self, message: str = "Invalid or missing API key."):
+        super().__init__(message=message, status_code=401)

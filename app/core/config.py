@@ -35,7 +35,10 @@ class Settings(BaseSettings):
     WORKER_JOB_TIMEOUT_SECONDS: int = 600
     RUN_WORKER_IN_APP: bool = True  # Allows single-process local dev or separate worker process
 
-    # Security & CORS
+    # Security, Limits & Authentication
+    API_KEY_ENABLED: bool = False
+    API_KEY: str | None = None
+    MAX_PAYLOAD_SIZE_BYTES: int = Field(default=10 * 1024 * 1024, description="Max request payload size (10 MB)")
     ALLOWED_ORIGINS: list[str] = ["*"]
 
     @field_validator("STORAGE_DIR", mode="before")
