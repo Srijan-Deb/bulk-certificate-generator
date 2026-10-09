@@ -33,6 +33,8 @@ def test_job_submission_and_processing_lifecycle(client, db_session):
     assert status_data["status"] == "PENDING"
     assert status_data["successful_count"] == 0
     assert status_data["failed_count"] == 0
+    assert status_data["pending_count"] == 2
+    assert status_data["processing_count"] == 0
     assert status_data["progress_percentage"] == 0.0
 
     # 3. Trigger worker tick using the test DB session
@@ -50,6 +52,8 @@ def test_job_submission_and_processing_lifecycle(client, db_session):
     assert final_data["status"] == "COMPLETED"
     assert final_data["successful_count"] == 2
     assert final_data["failed_count"] == 0
+    assert final_data["pending_count"] == 0
+    assert final_data["processing_count"] == 0
     assert final_data["progress_percentage"] == 100.0
     assert final_data["completed_at"] is not None
     assert final_data["zip_download_url"] is not None

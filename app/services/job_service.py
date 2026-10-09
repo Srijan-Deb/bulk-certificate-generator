@@ -79,6 +79,19 @@ class JobService:
             raise JobNotFoundError(job_id)
         return job
 
+    def get_job_status_counts(self, db: Session, job_id: str) -> dict[str, int]:
+        """
+        Aggregates individual certificate status counts (PENDING, PROCESSING, SUCCESS, FAILED)
+        for a job directly from the database.
+        """
+        stmt = (
+            select(CertificateRecord.status, func.count(CertificateRecord.id))
+            .where(CertificateRecord.job_id == job_id)
+            .group_by(CertificateRecord.status)
+        )
+        rows = db.execute(stmt).all()
+        return {status: count for status, count in rows}
+
     def get_job_certificates(
         self, db: Session, job_id: str, status_filter: str | None = None, limit: int = 100, offset: int = 0
     ) -> tuple[list[CertificateRecord], int]:

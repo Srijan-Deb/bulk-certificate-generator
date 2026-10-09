@@ -87,6 +87,8 @@ class JobStatusResponse(BaseModel):
     total_recipients: int
     successful_count: int
     failed_count: int
+    pending_count: int = 0
+    processing_count: int = 0
     progress_percentage: float
     created_at: datetime
     started_at: datetime | None = None

@@ -59,6 +59,8 @@ def get_job_status(job_id: str, req: Request, db: Session = Depends(get_db)):
     if job.successful_count > 0:
         zip_url = str(req.url_for("download_job_certificates_zip", job_id=job.id))
 
+    status_counts = job_service.get_job_status_counts(db=db, job_id=job.id)
+
     return JobStatusResponse(
         job_id=job.id,
         status=job.status,
@@ -69,6 +71,8 @@ def get_job_status(job_id: str, req: Request, db: Session = Depends(get_db)):
         total_recipients=job.total_recipients,
         successful_count=job.successful_count,
         failed_count=job.failed_count,
+        pending_count=status_counts.get("PENDING", 0),
+        processing_count=status_counts.get("PROCESSING", 0),
         progress_percentage=progress,
         created_at=job.created_at,
         started_at=job.started_at,
