@@ -44,3 +44,8 @@ coverage.xml
 *.swo
 .DS_Store
 Thumbs.db
+
+# Documentation & Assignment Reference files (excluded from repository)
+docs/
+PDFs/
+*.pdf
