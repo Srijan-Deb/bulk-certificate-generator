@@ -84,6 +84,105 @@ class CertificateGenerator:
         safe_cert_id = "".join(c for c in certificate_id if c.isalnum() or c in ("-", "_"))
         return job_dir / f"{safe_cert_id}.pdf"
 
+    @staticmethod
+    def process_raw_signature_image(source_path: Path, output_path: Path) -> Path | None:
+        """
+        Converts a raw photo/scan of a signature (JPEG/PNG) into a clean,
+        background-free transparent PNG suitable for vector certificates.
+        Handles EXIF rotation, vignette removal, and alpha thresholding.
+        """
+        try:
+            from PIL import Image, ImageOps
+
+            if not source_path.exists():
+                return None
+
+            raw_img = Image.open(source_path)
+            # Correct orientation from camera EXIF tags
+            oriented = ImageOps.exif_transpose(raw_img)
+            gray = oriented.convert("L")
+
+            # Crop margin vignette/shadows if image is large enough
+            w, h = gray.size
+            if w > 400 and h > 200:
+                crop_box = (
+                    int(w * 0.15),
+                    int(h * 0.15),
+                    int(w * 0.95),
+                    int(h * 0.95),
+                )
+                gray = gray.crop(crop_box)
+
+            # Build smooth alpha mask: ink (<60) -> 255, paper (>115) -> 0
+            lut = []
+            for g in range(256):
+                if g >= 115:
+                    lut.append(0)
+                elif g <= 60:
+                    lut.append(255)
+                else:
+                    t = (115 - g) / (115 - 60)
+                    lut.append(int(255 * (t**1.2)))
+
+            alpha = gray.point(lut, mode="L")
+            # Deep midnight navy ink color matching certificate palette (#14213D / 20, 33, 61)
+            color_img = Image.new("RGB", gray.size, (20, 33, 61))
+            color_img.putalpha(alpha)
+
+            bbox = color_img.getbbox()
+            if bbox:
+                pad = 10
+                final_sig = color_img.crop(
+                    (
+                        max(0, bbox[0] - pad),
+                        max(0, bbox[1] - pad),
+                        min(color_img.width, bbox[2] + pad),
+                        min(color_img.height, bbox[3] + pad),
+                    )
+                )
+            else:
+                final_sig = color_img
+
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            final_sig.save(output_path, format="PNG")
+            logger.info("Successfully processed and saved transparent signature to %s", output_path)
+            return output_path
+        except Exception as exc:
+            logger.warning("Failed to process signature image from %s: %s", source_path, exc)
+            return None
+
+    def get_signature_image_path(self) -> Path | None:
+        """
+        Locates the authorized signature graphic.
+        Prioritizes:
+        1. settings.SIGNATURE_IMAGE_PATH if it exists.
+        2. templates/signature.png.
+        3. Raw image files in workspace root (e.g., IMG_20261011_230046.jpg.jpeg) converted on the fly.
+        """
+        # Option 1: Configured path already exists
+        if settings.SIGNATURE_IMAGE_PATH and settings.SIGNATURE_IMAGE_PATH.exists():
+            return settings.SIGNATURE_IMAGE_PATH
+
+        default_png = Path("./templates/signature.png")
+        if default_png.exists():
+            return default_png
+
+        # Option 2: Search for raw signature images to auto-process
+        candidate_names = [
+            "IMG_20261011_230046.jpg.jpeg",
+            "signature.jpg",
+            "signature.png",
+            "signature.jpeg",
+        ]
+        for name in candidate_names:
+            candidate = Path(name)
+            if candidate.exists():
+                processed = self.process_raw_signature_image(candidate, default_png)
+                if processed and processed.exists():
+                    return processed
+
+        return None
+
     def render_certificate(
         self,
         job_id: str,
@@ -272,13 +371,40 @@ class CertificateGenerator:
         right_col_x = page_width - 130
         c.setStrokeColor(slate_muted)
         c.setLineWidth(0.8)
-        c.line(right_col_x - 50, 105, right_col_x + 50, 105)
+        c.line(right_col_x - 60, 105, right_col_x + 60, 105)
         c.setFillColor(slate_muted)
         c.setFont("Helvetica", 10)
         c.drawCentredString(right_col_x, 88, "Authorized Signatory")
-        c.setFillColor(navy_dark)
-        c.setFont("Helvetica-Oblique", 11)
-        c.drawCentredString(right_col_x, 112, clean_issuer)
+
+        sig_path = self.get_signature_image_path()
+        sig_drawn = False
+        if sig_path and sig_path.exists():
+            try:
+                sig_w = 115
+                sig_h = 52
+                sig_x = right_col_x - (sig_w / 2.0)
+                sig_y = 104
+                c.drawImage(
+                    str(sig_path),
+                    sig_x,
+                    sig_y,
+                    width=sig_w,
+                    height=sig_h,
+                    mask="auto",
+                    preserveAspectRatio=True,
+                )
+                sig_drawn = True
+                # Display issuing organization title beneath Authorized Signatory
+                c.setFillColor(navy_dark)
+                c.setFont("Helvetica", 8)
+                c.drawCentredString(right_col_x, 75, clean_issuer)
+            except Exception as exc:
+                logger.warning("Failed to draw signature image from %s: %s", sig_path, exc)
+
+        if not sig_drawn:
+            c.setFillColor(navy_dark)
+            c.setFont("Helvetica-Oblique", 11)
+            c.drawCentredString(right_col_x, 112, clean_issuer)
 
         # 14. Bottom Verification Banner (Unique ID & Cryptographic Verification Code)
         c.setFillColor(slate_muted)

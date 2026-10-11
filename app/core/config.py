@@ -24,8 +24,12 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./data.db"
     DB_ECHO: bool = False
 
-    # Storage Settings
+    # Storage & Asset Settings
     STORAGE_DIR: Path = Path("./storage/certificates")
+    SIGNATURE_IMAGE_PATH: Path = Field(
+        default=Path("./templates/signature.png"),
+        description="Path to authorized signatory signature image",
+    )
     MAX_BATCH_SIZE: int = Field(default=1000, ge=1, le=5000, description="Max recipients per bulk request")
     MAX_FILE_RETENTION_HOURS: int = 72
 

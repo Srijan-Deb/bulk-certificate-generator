@@ -16,6 +16,13 @@ reportlab>=4.2.0
 pillow>=10.4.0
 pypdf>=4.0.0
 
+# Spreadsheet Upload & Ingestion
+python-multipart>=0.0.9
+openpyxl>=3.1.0
+
+# System & Resource Monitoring
+psutil>=6.0.0
+
 # Testing & Quality Assurance
 pytest>=8.3.0
 pytest-asyncio>=0.24.0

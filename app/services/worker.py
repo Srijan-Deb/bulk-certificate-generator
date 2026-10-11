@@ -16,6 +16,8 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.logging import job_id_ctx
+from app.core.metrics import metrics
 from app.db.session import SessionLocal
 from app.models.certificate import CertificateRecord
 from app.models.enums import CertificateStatus, JobStatus
@@ -62,6 +64,7 @@ class JobWorker:
 
         if recovered_count > 0:
             db.commit()
+            metrics.record_stale_job_recovery(recovered_count)
             logger.info("Successfully recovered %d stale jobs.", recovered_count)
         return recovered_count
 
@@ -108,85 +111,106 @@ class JobWorker:
         Processes all recipient records for the job with isolated error handling.
         A failure in one recipient never halts processing of subsequent recipients.
         """
-        # Fetch pending certificate records for this job
-        stmt = (
-            select(CertificateRecord)
-            .where(
-                CertificateRecord.job_id == job.id,
-                CertificateRecord.status.in_([CertificateStatus.PENDING.value, CertificateStatus.PROCESSING.value]),
+        # Step 1: Set worker correlation context & start timer
+        token = job_id_ctx.set(job.id)
+        job_start_time = time.perf_counter()
+
+        try:
+            # Fetch pending certificate records for this job
+            stmt = (
+                select(CertificateRecord)
+                .where(
+                    CertificateRecord.job_id == job.id,
+                    CertificateRecord.status.in_([CertificateStatus.PENDING.value, CertificateStatus.PROCESSING.value]),
+                )
+                .order_by(CertificateRecord.created_at.asc())
             )
-            .order_by(CertificateRecord.created_at.asc())
-        )
-        records = db.execute(stmt).scalars().all()
+            records = db.execute(stmt).scalars().all()
 
-        for record in records:
-            # Mark individual recipient as PROCESSING
-            record.status = CertificateStatus.PROCESSING.value
-            db.commit()
+            for record in records:
+                # Mark individual recipient as PROCESSING
+                record.status = CertificateStatus.PROCESSING.value
+                db.commit()
 
-            # Recipient Data Validation
-            if not record.recipient_name or len(record.recipient_name.strip()) < 2:
-                logger.warning("Recipient record '%s' validation failed: Invalid name", record.id)
-                record.status = CertificateStatus.FAILED.value
-                record.error_code = "INVALID_RECIPIENT_DATA"
-                record.error_message = "Recipient name must be at least 2 characters long."
-                record.completed_at = datetime.now(timezone.utc)
-                job.failed_count += 1
+                # Recipient Data Validation
+                if not record.recipient_name or len(record.recipient_name.strip()) < 2:
+                    logger.warning("Recipient record '%s' validation failed: Invalid name", record.id)
+                    record.status = CertificateStatus.FAILED.value
+                    record.error_code = "INVALID_RECIPIENT_DATA"
+                    record.error_message = "Recipient name must be at least 2 characters long."
+                    record.completed_at = datetime.now(timezone.utc)
+                    job.failed_count += 1
+                    job.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+                    metrics.record_certificate_render(0.0, status="FAILED", error_code="INVALID_RECIPIENT_DATA")
+                    continue
+
+                # Render PDF Certificate
+                render_start = time.perf_counter()
+                try:
+                    pdf_path = certificate_generator.render_certificate(
+                        job_id=job.id,
+                        certificate_id=record.certificate_id,
+                        recipient_name=record.recipient_name,
+                        event_name=job.event_name,
+                        issuer_name=job.issuer_name,
+                        issue_date=job.issue_date,
+                        certificate_title=job.certificate_title,
+                        custom_remarks=record.custom_remarks,
+                    )
+                    render_duration = time.perf_counter() - render_start
+                    record.file_path = str(pdf_path)
+                    record.status = CertificateStatus.SUCCESS.value
+                    record.completed_at = datetime.now(timezone.utc)
+                    record.error_code = None
+                    record.error_message = None
+                    job.successful_count += 1
+                    metrics.record_certificate_render(render_duration, status="SUCCESS")
+                except Exception as exc:
+                    render_duration = time.perf_counter() - render_start
+                    logger.exception(
+                        "Failed to generate PDF for recipient '%s' (ID: %s)", record.recipient_name, record.id
+                    )
+                    record.status = CertificateStatus.FAILED.value
+                    record.error_code = "PDF_RENDER_ERROR"
+                    record.error_message = str(exc)
+                    record.completed_at = datetime.now(timezone.utc)
+                    job.failed_count += 1
+                    metrics.record_certificate_render(render_duration, status="FAILED", error_code="PDF_RENDER_ERROR")
+
+                # Progressively update job heartbeat
                 job.updated_at = datetime.now(timezone.utc)
                 db.commit()
-                continue
 
-            # Render PDF Certificate
-            try:
-                pdf_path = certificate_generator.render_certificate(
-                    job_id=job.id,
-                    certificate_id=record.certificate_id,
-                    recipient_name=record.recipient_name,
-                    event_name=job.event_name,
-                    issuer_name=job.issuer_name,
-                    issue_date=job.issue_date,
-                    certificate_title=job.certificate_title,
-                    custom_remarks=record.custom_remarks,
-                )
-                record.file_path = str(pdf_path)
-                record.status = CertificateStatus.SUCCESS.value
-                record.completed_at = datetime.now(timezone.utc)
-                record.error_code = None
-                record.error_message = None
-                job.successful_count += 1
-            except Exception as exc:
-                logger.exception("Failed to generate PDF for recipient '%s' (ID: %s)", record.recipient_name, record.id)
-                record.status = CertificateStatus.FAILED.value
-                record.error_code = "PDF_RENDER_ERROR"
-                record.error_message = str(exc)
-                record.completed_at = datetime.now(timezone.utc)
-                job.failed_count += 1
+            # Step 3: Determine final aggregate job status
+            now = datetime.now(timezone.utc)
+            job.completed_at = now
+            job.updated_at = now
 
-            # Progressively update job heartbeat
-            job.updated_at = datetime.now(timezone.utc)
+            if job.failed_count == 0:
+                job.status = JobStatus.COMPLETED.value
+            elif job.successful_count > 0 and job.failed_count > 0:
+                job.status = JobStatus.COMPLETED_WITH_ERRORS.value
+            else:
+                job.status = JobStatus.COMPLETED_WITH_ERRORS.value if job.total_recipients > 0 else JobStatus.FAILED.value
+
             db.commit()
 
-        # Step 3: Determine final aggregate job status
-        now = datetime.now(timezone.utc)
-        job.completed_at = now
-        job.updated_at = now
+            # Record job metrics
+            job_duration = time.perf_counter() - job_start_time
+            metrics.record_job_completed(job.status, job_duration)
 
-        if job.failed_count == 0:
-            job.status = JobStatus.COMPLETED.value
-        elif job.successful_count > 0 and job.failed_count > 0:
-            job.status = JobStatus.COMPLETED_WITH_ERRORS.value
-        else:
-            job.status = JobStatus.COMPLETED_WITH_ERRORS.value if job.total_recipients > 0 else JobStatus.FAILED.value
-
-        db.commit()
-        logger.info(
-            "Job '%s' finished processing: status=%s, success=%d, failed=%d, total=%d",
-            job.id,
-            job.status,
-            job.successful_count,
-            job.failed_count,
-            job.total_recipients,
-        )
+            logger.info(
+                "Job '%s' finished processing in %.2fs: status=%s, success=%d, failed=%d, total=%d",
+                job.id,
+                job_duration,
+                job.status,
+                job.successful_count,
+                job.failed_count,
+                job.total_recipients,
+            )
+        finally:
+            job_id_ctx.reset(token)
 
     def process_one_pending_job(self) -> bool:
         """Attempts to claim and process a single pending job. Returns True if a job was processed."""

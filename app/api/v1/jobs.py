@@ -3,11 +3,12 @@ Job Management Endpoints
 Handles creation, status polling, recipient listings, and bulk ZIP download.
 """
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, verify_api_key
+from app.core.metrics import metrics
 from app.schemas.job import (
     BulkCreateJobRequest,
     JobAcceptedResponse,
@@ -15,6 +16,7 @@ from app.schemas.job import (
 )
 from app.schemas.recipient import CertificateRecordResponse
 from app.services.job_service import job_service
+from app.services.spreadsheet_parser import spreadsheet_parser
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -33,6 +35,7 @@ def create_bulk_job(
     _api_key: str | None = Depends(verify_api_key),
 ):
     job = job_service.create_bulk_job(db=db, request=request)
+    metrics.record_job_submitted("json")
     status_url = str(req.url_for("get_job_status", job_id=job.id))
 
     return JobAcceptedResponse(
@@ -41,6 +44,101 @@ def create_bulk_job(
         total_recipients=job.total_recipients,
         created_at=job.created_at,
         status_url=status_url,
+    )
+
+
+@router.post(
+    "/upload",
+    response_model=JobAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Upload Spreadsheet to Generate Bulk Certificates",
+    description=(
+        "Accepts event metadata as form fields and a spreadsheet file (.xlsx or .csv) containing recipient rows. "
+        "Parses and validates all recipients, queues a background certificate generation job, "
+        "and returns a 202 Accepted response with a polling status URL and ZIP download link once processed."
+    ),
+)
+async def upload_recipients_job(
+    req: Request,
+    file: UploadFile = File(
+        ...,
+        description="Spreadsheet containing recipient records (Excel .xlsx or CSV .csv)",
+    ),
+    event_name: str = Form(
+        ...,
+        min_length=2,
+        max_length=255,
+        description="Event Name (e.g., Course, conference, or workshop title)",
+        examples=["Advanced Python Backend Engineering"],
+    ),
+    issuer_name: str = Form(
+        ...,
+        min_length=2,
+        max_length=255,
+        description="Issuer Name (Issuing organization or authority)",
+        examples=["Global Tech Institute"],
+    ),
+    issue_date: str = Form(
+        ...,
+        min_length=4,
+        max_length=50,
+        description="Issue Date (Date of award or completion)",
+        examples=["2026-10-10"],
+    ),
+    certificate_title: str = Form(
+        "Certificate of Completion",
+        max_length=255,
+        description="Certificate Title (Heading printed on certificate)",
+        examples=["Certificate of Completion"],
+    ),
+    db: Session = Depends(get_db),
+    _api_key: str | None = Depends(verify_api_key),
+):
+    # Read file bytes
+    contents = await file.read()
+
+    # Parse and validate recipients from spreadsheet
+    recipients = spreadsheet_parser.parse_recipients_file(
+        file_bytes=contents,
+        filename=file.filename or "recipients.xlsx",
+    )
+
+    # Build job request schema with parsed recipients
+    job_request = BulkCreateJobRequest(
+        event_name=event_name,
+        issuer_name=issuer_name,
+        issue_date=issue_date,
+        certificate_title=certificate_title,
+        recipients=recipients,
+    )
+
+    # Persist and queue the job
+    job = job_service.create_bulk_job(db=db, request=job_request)
+    metrics.record_job_submitted("upload")
+    status_url = str(req.url_for("get_job_status", job_id=job.id))
+
+    return JobAcceptedResponse(
+        job_id=job.id,
+        status=job.status,
+        total_recipients=job.total_recipients,
+        created_at=job.created_at,
+        status_url=status_url,
+        message=f"Spreadsheet '{file.filename}' processed successfully ({job.total_recipients} recipients queued).",
+    )
+
+
+@router.get(
+    "/upload/template",
+    status_code=status.HTTP_200_OK,
+    summary="Download Sample Recipients Spreadsheet Template",
+    description="Downloads a pre-formatted Excel template (.xlsx) with expected column headers and sample recipient rows.",
+)
+def download_recipients_template():
+    content = spreadsheet_parser.generate_sample_recipients_excel()
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="recipients.xlsx"'},
     )
 
 
@@ -135,6 +233,13 @@ def list_job_certificates(
     summary="Download All Job Certificates as a ZIP Archive",
     description="Bundles all successfully generated certificate PDFs in this job into a single compressed ZIP file.",
 )
+@router.get(
+    "/{job_id}/download",
+    status_code=status.HTTP_200_OK,
+    summary="Download All Job Certificates as a ZIP Archive (Alias)",
+    description="Alias for download-zip: bundles all successfully generated certificate PDFs in this job into a single compressed ZIP file.",
+)
 def download_job_certificates_zip(job_id: str, db: Session = Depends(get_db)):
     zip_path = job_service.create_job_zip_archive(db=db, job_id=job_id)
     return FileResponse(path=str(zip_path), media_type="application/zip", filename=f"certificates_job_{job_id}.zip")
+

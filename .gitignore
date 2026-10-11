@@ -45,11 +45,14 @@ coverage.xml
 .DS_Store
 Thumbs.db
 
-# Documentation, Architecture Diagrams & Reference files (excluded from repository)
+# Documentation & PDFs (excluded from repository as requested)
 docs/
 PDFs/
 *.pdf
-System Architecture and Design/
 *INTERVIEW*
 *Interview*
 *interview*
+
+# Raw uploaded camera photos (templates/signature.png is used instead)
+IMG_*
+*.jpeg

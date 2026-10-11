@@ -1,0 +1,38 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Python cache & compiled bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Testing & Coverage
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+test_data.db
+
+# Databases & local state
+data.db
+data.db-wal
+data.db-shm
+*.db
+backups/
+
+# Generated outputs & archives
+storage/certificates/*
+generated_certificates/*
+*.zip
+
+# Git & IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Environment files
+.env

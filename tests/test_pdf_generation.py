@@ -183,3 +183,41 @@ def test_pdf_can_be_opened_and_parsed_with_pypdf(tmp_path):
     assert metadata is not None
     assert "Ada Lovelace" in metadata.title
     assert "Royal Society of Computing" in metadata.author
+
+
+def test_authorized_signature_rendering_and_fallback(tmp_path, monkeypatch):
+    """Verifies that signature graphic renders properly and falls back gracefully when absent."""
+    generator = CertificateGenerator(output_dir=tmp_path)
+    job_id = "test-sig-render"
+    cert_id = generator.generate_certificate_id()
+
+    # 1. Render with signature graphic enabled
+    pdf_with_sig = generator.render_certificate(
+        job_id=job_id,
+        certificate_id=cert_id,
+        recipient_name="Srijan Deb",
+        event_name="Full Stack Engineering",
+        issuer_name="Global Tech Institute",
+        issue_date="2026-10-11",
+    )
+    assert pdf_with_sig.exists()
+    reader_with_sig = pypdf.PdfReader(str(pdf_with_sig))
+    assert len(reader_with_sig.pages) == 1
+    # Check that image XObject exists on the page
+    page_with_sig = reader_with_sig.pages[0]
+    assert len(page_with_sig.images) > 0
+
+    # 2. Render with signature disabled (fallback to text)
+    monkeypatch.setattr(generator, "get_signature_image_path", lambda: None)
+    cert_id_fallback = generator.generate_certificate_id()
+    pdf_fallback = generator.render_certificate(
+        job_id=job_id,
+        certificate_id=cert_id_fallback,
+        recipient_name="Srijan Deb",
+        event_name="Full Stack Engineering",
+        issuer_name="Global Tech Institute",
+        issue_date="2026-10-11",
+    )
+    assert pdf_fallback.exists()
+    reader_fallback = pypdf.PdfReader(str(pdf_fallback))
+    assert len(reader_fallback.pages) == 1

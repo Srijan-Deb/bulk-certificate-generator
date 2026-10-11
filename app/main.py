@@ -4,8 +4,10 @@ Configures application lifespan, CORS, middleware, global error handling,
 and OpenAPI route registration.
 """
 
+import re
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, status
@@ -17,7 +19,8 @@ from fastapi.responses import JSONResponse
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.errors import AppError
-from app.core.logging import setup_logging
+from app.core.logging import request_id_ctx, setup_logging
+from app.core.metrics import metrics
 from app.db.base import Base
 from app.db.session import engine, get_db
 from app.services.worker import worker
@@ -99,6 +102,60 @@ app.add_middleware(
 )
 
 
+# Observability Distributed Tracing & Metrics Middleware
+@app.middleware("http")
+async def observability_middleware(request: Request, call_next):
+    # Extract or generate correlation Request ID
+    req_id = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:12]}"
+    token = request_id_ctx.set(req_id)
+    metrics.http_request_started()
+    start_time = time.perf_counter()
+
+    try:
+        response = await call_next(request)
+    finally:
+        duration = time.perf_counter() - start_time
+        request_id_ctx.reset(token)
+
+    # Normalize dynamic route path for Prometheus cardinality protection
+    norm_path = re.sub(
+        r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        "/{job_id}",
+        request.url.path,
+    )
+    norm_path = re.sub(
+        r"/CERT-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}",
+        "/{certificate_id}",
+        norm_path,
+    )
+    metrics.record_http_request(
+        method=request.method,
+        path=norm_path,
+        status_code=response.status_code,
+        duration_seconds=duration,
+    )
+
+    # Attach observability headers
+    response.headers["X-Request-ID"] = req_id
+    response.headers["X-Process-Time"] = f"{round(duration * 1000.0, 2)}ms"
+
+    # Log structured access event
+    log_func = (
+        logger.error
+        if response.status_code >= 500
+        else (logger.warning if response.status_code >= 400 else logger.info)
+    )
+    log_func(
+        "%s %s -> %d in %.2fms",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration * 1000.0,
+    )
+
+    return response
+
+
 # Security Headers & Request Body Size Limit Middleware
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
@@ -174,3 +231,10 @@ def health_alias(db=Depends(get_db)):
     from app.api.v1.health import health_check
 
     return health_check(db=db)
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics_alias():
+    from app.api.v1.observability import get_prometheus_metrics
+
+    return get_prometheus_metrics()

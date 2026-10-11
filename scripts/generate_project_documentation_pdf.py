@@ -3,16 +3,14 @@ Generate Comprehensive Project Documentation PDF for Bulk Certificate Generator.
 Covers all 14 phases, architectural designs, empirical benchmarks, observations, and interview defense.
 """
 
-import os
 import sys
 from datetime import datetime
-from reportlab.lib.pagesizes import letter
+
 from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, HRFlowable
-)
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfgen import canvas
+from reportlab.platypus import HRFlowable, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
 class NumberedCanvas(canvas.Canvas):

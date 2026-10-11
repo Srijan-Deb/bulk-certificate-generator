@@ -48,3 +48,16 @@ class SecurityViolationError(AppError):
 class AuthenticationError(AppError):
     def __init__(self, message: str = "Invalid or missing API key."):
         super().__init__(message=message, status_code=401)
+
+
+class InvalidFileFormatError(AppError):
+    def __init__(
+        self,
+        message: str = "Unsupported file format. Please upload an Excel (.xlsx) or CSV (.csv) file.",
+    ):
+        super().__init__(message=message, status_code=400)
+
+
+class SpreadsheetParsingError(AppError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
+        super().__init__(message=message, status_code=422, details=details)
