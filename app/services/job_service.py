@@ -23,12 +23,13 @@ from app.models.enums import CertificateStatus, JobStatus
 from app.models.job import GenerationJob
 from app.schemas.job import BulkCreateJobRequest
 from app.services.certificate_service import certificate_generator
+from app.services.cloud_storage import cloud_storage
 
 
 class JobService:
     """Business logic for generation jobs and certificate retrieval."""
 
-    def create_bulk_job(self, db: Session, request: BulkCreateJobRequest) -> GenerationJob:
+    def create_bulk_job(self, db: Session, request: BulkCreateJobRequest, user_id: str | None = None) -> GenerationJob:
         """
         Validates request batch limits and transactionally creates
         the GenerationJob and all initial CertificateRecord entries.
@@ -41,6 +42,7 @@ class JobService:
         now = datetime.now(timezone.utc)
         job = GenerationJob(
             status=JobStatus.PENDING.value,
+            user_id=user_id,
             event_name=request.event_name,
             issuer_name=request.issuer_name,
             issue_date=request.issue_date,
@@ -144,6 +146,11 @@ class JobService:
             raise SecurityViolationError("Access denied: File is outside authorized storage path.")
 
         if not file_path.exists() or not file_path.is_file():
+            # If missing locally, attempt to restore from S3 cloud storage
+            if record.cloud_key and cloud_storage.is_configured():
+                cloud_storage.download_file(record.cloud_key, file_path)
+
+        if not file_path.exists() or not file_path.is_file():
             raise StorageAccessError(f"Certificate file for '{certificate_id}' is missing from storage.")
 
         filename = f"{certificate_id}.pdf"
@@ -169,14 +176,24 @@ class JobService:
 
         with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
             for record in successful_records:
-                if record.file_path and Path(record.file_path).exists():
+                if record.file_path:
                     p = Path(record.file_path)
-                    # Safe filename inside zip: Recipient_Name_CERT_ID.pdf
-                    safe_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in record.recipient_name)
-                    arcname = f"{safe_name}_{record.certificate_id}.pdf"
-                    zip_file.write(p, arcname=arcname)
+                    if not p.exists() and record.cloud_key and cloud_storage.is_configured():
+                        cloud_storage.download_file(record.cloud_key, p)
+                    if p.exists():
+                        safe_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in record.recipient_name)
+                        arcname = f"{safe_name}_{record.certificate_id}.pdf"
+                        zip_file.write(p, arcname=arcname)
 
         return zip_path
+
+    def list_jobs(self, db: Session, user_id: str | None = None, limit: int = 50) -> list[GenerationJob]:
+        """Lists recent jobs, optionally filtered by user_id."""
+        query = select(GenerationJob)
+        if user_id:
+            query = query.where(GenerationJob.user_id == user_id)
+        query = query.order_by(GenerationJob.created_at.desc()).limit(limit)
+        return list(db.execute(query).scalars().all())
 
 
 job_service = JobService()

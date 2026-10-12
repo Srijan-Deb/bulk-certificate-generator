@@ -89,7 +89,9 @@ def test_long_recipient_name_and_event_handling(tmp_path):
     cert_id = generator.generate_certificate_id()
 
     very_long_name = "Dr. Alexander Montgomery Bartholomew-Fitzgerald III, Baron of Wellington"
-    very_long_event = "Advanced Distributed Systems, Fault Tolerance, and High-Performance Cloud Architecture Certification"
+    very_long_event = (
+        "Advanced Distributed Systems, Fault Tolerance, and High-Performance Cloud Architecture Certification"
+    )
 
     pdf_path = generator.render_certificate(
         job_id=job_id,

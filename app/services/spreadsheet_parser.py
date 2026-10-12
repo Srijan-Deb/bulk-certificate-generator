@@ -146,7 +146,9 @@ class SpreadsheetParser:
                 continue
 
         if text is None:
-            raise InvalidFileFormatError("Unable to decode CSV text. File must be encoded in UTF-8 or compatible text format.")
+            raise InvalidFileFormatError(
+                "Unable to decode CSV text. File must be encoded in UTF-8 or compatible text format."
+            )
 
         reader = csv.reader(io.StringIO(text))
         return [row for row in reader]
@@ -204,9 +206,7 @@ class SpreadsheetParser:
             # Extract Name
             raw_name = row[name_col_idx] if name_col_idx < len(row) else None
             if raw_name is None or not str(raw_name).strip():
-                raise SpreadsheetParsingError(
-                    f"Row {excel_row_num}: Recipient name is required and cannot be empty."
-                )
+                raise SpreadsheetParsingError(f"Row {excel_row_num}: Recipient name is required and cannot be empty.")
 
             name = str(raw_name).strip()
             if len(name) < 2:

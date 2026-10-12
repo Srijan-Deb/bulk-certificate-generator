@@ -23,6 +23,7 @@ from app.models.certificate import CertificateRecord
 from app.models.enums import CertificateStatus, JobStatus
 from app.models.job import GenerationJob
 from app.services.certificate_service import certificate_generator
+from app.services.cloud_storage import cloud_storage
 
 logger = logging.getLogger("bulk_certificate_generator.worker")
 
@@ -160,6 +161,14 @@ class JobWorker:
                     )
                     render_duration = time.perf_counter() - render_start
                     record.file_path = str(pdf_path)
+
+                    # Optional S3 Cloud Storage Backup (Cloudflare R2 / Supabase)
+                    if cloud_storage.is_configured():
+                        remote_key = f"jobs/{job.id}/certificates/{record.certificate_id}.pdf"
+                        uploaded = cloud_storage.upload_file(pdf_path, remote_key=remote_key)
+                        if uploaded:
+                            record.cloud_key = remote_key
+
                     record.status = CertificateStatus.SUCCESS.value
                     record.completed_at = datetime.now(timezone.utc)
                     record.error_code = None
@@ -192,7 +201,9 @@ class JobWorker:
             elif job.successful_count > 0 and job.failed_count > 0:
                 job.status = JobStatus.COMPLETED_WITH_ERRORS.value
             else:
-                job.status = JobStatus.COMPLETED_WITH_ERRORS.value if job.total_recipients > 0 else JobStatus.FAILED.value
+                job.status = (
+                    JobStatus.COMPLETED_WITH_ERRORS.value if job.total_recipients > 0 else JobStatus.FAILED.value
+                )
 
             db.commit()
 

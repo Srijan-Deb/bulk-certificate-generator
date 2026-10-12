@@ -57,6 +57,19 @@ async def lifespan(app: FastAPI):
     # 1. Startup: Auto-create database tables
     logger.info("Initializing database schema on %s...", settings.DATABASE_URL)
     Base.metadata.create_all(bind=engine)
+    try:
+        from sqlalchemy import text
+
+        with engine.begin() as conn:
+            job_cols = [c[1] for c in conn.execute(text("PRAGMA table_info(generation_jobs)")).fetchall()]
+            if job_cols and "user_id" not in job_cols:
+                conn.execute(text("ALTER TABLE generation_jobs ADD COLUMN user_id VARCHAR(36)"))
+            cert_cols = [c[1] for c in conn.execute(text("PRAGMA table_info(certificate_records)")).fetchall()]
+            if cert_cols and "cloud_key" not in cert_cols:
+                conn.execute(text("ALTER TABLE certificate_records ADD COLUMN cloud_key VARCHAR(500)"))
+    except Exception as exc:
+        logger.debug("Database column inspection: %s", exc)
+
     settings.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
     # 2. Startup: Optional in-app worker
@@ -99,6 +112,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "Content-Type", "Content-Length", "X-Request-ID"],
 )
 
 

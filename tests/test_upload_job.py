@@ -33,7 +33,7 @@ def test_download_upload_template(client):
     resp = client.get("/api/v1/jobs/upload/template")
     assert resp.status_code == 200
     assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in resp.headers["content-type"]
-    assert "attachment; filename=\"recipients.xlsx\"" in resp.headers.get("content-disposition", "")
+    assert 'attachment; filename="recipients.xlsx"' in resp.headers.get("content-disposition", "")
 
     # Verify the downloaded workbook can be parsed
     recipients = spreadsheet_parser.parse_recipients_file(resp.content, "recipients.xlsx")
@@ -47,12 +47,14 @@ def test_upload_valid_xlsx_and_complete_lifecycle(client, db_session):
     Submits an .xlsx spreadsheet via POST /api/v1/jobs/upload, verifies job creation,
     runs the background worker, and downloads the resulting ZIP archive.
     """
-    xlsx_bytes = _create_test_xlsx([
-        ["recipient_name", "recipient_email", "custom_remarks"],
-        ["Grace Hopper", "grace@example.com", "Compiler Pioneer"],
-        ["Alan Turing", "alan@example.com", "Father of Computing"],
-        ["Margaret Hamilton", "margaret@example.com", "Apollo Software Lead"],
-    ])
+    xlsx_bytes = _create_test_xlsx(
+        [
+            ["recipient_name", "recipient_email", "custom_remarks"],
+            ["Grace Hopper", "grace@example.com", "Compiler Pioneer"],
+            ["Alan Turing", "alan@example.com", "Father of Computing"],
+            ["Margaret Hamilton", "margaret@example.com", "Apollo Software Lead"],
+        ]
+    )
 
     form_data = {
         "event_name": "Distributed Systems Bootcamp 2026",
@@ -61,7 +63,11 @@ def test_upload_valid_xlsx_and_complete_lifecycle(client, db_session):
         "certificate_title": "Certificate of Distinction",
     }
     files = {
-        "file": ("recipients.xlsx", io.BytesIO(xlsx_bytes), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        "file": (
+            "recipients.xlsx",
+            io.BytesIO(xlsx_bytes),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
     }
 
     response = client.post("/api/v1/jobs/upload", data=form_data, files=files)
@@ -132,11 +138,19 @@ def test_upload_valid_csv(client, db_session):
 
 def test_upload_missing_required_fields(client):
     """Ensures 422 error when mandatory form fields are omitted."""
-    xlsx_bytes = _create_test_xlsx([
-        ["name", "email"],
-        ["Alice", "alice@example.com"],
-    ])
-    files = {"file": ("recipients.xlsx", io.BytesIO(xlsx_bytes), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    xlsx_bytes = _create_test_xlsx(
+        [
+            ["name", "email"],
+            ["Alice", "alice@example.com"],
+        ]
+    )
+    files = {
+        "file": (
+            "recipients.xlsx",
+            io.BytesIO(xlsx_bytes),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
 
     # Missing event_name and issuer_name
     response = client.post("/api/v1/jobs/upload", data={"issue_date": "2026-10-11"}, files=files)
@@ -150,7 +164,9 @@ def test_upload_empty_file(client):
         "issuer_name": "Test Issuer",
         "issue_date": "2026-10-11",
     }
-    files = {"file": ("empty.xlsx", io.BytesIO(b""), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    files = {
+        "file": ("empty.xlsx", io.BytesIO(b""), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    }
 
     response = client.post("/api/v1/jobs/upload", data=form_data, files=files)
     assert response.status_code == 400
@@ -178,7 +194,13 @@ def test_upload_corrupted_xlsx_file(client):
         "issuer_name": "Test Issuer",
         "issue_date": "2026-10-11",
     }
-    files = {"file": ("corrupt.xlsx", io.BytesIO(b"not an excel zip archive"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    files = {
+        "file": (
+            "corrupt.xlsx",
+            io.BytesIO(b"not an excel zip archive"),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
 
     response = client.post("/api/v1/jobs/upload", data=form_data, files=files)
     assert response.status_code == 400
@@ -187,16 +209,24 @@ def test_upload_corrupted_xlsx_file(client):
 
 def test_upload_missing_name_column(client):
     """Ensures 422 error when spreadsheet has no recognizable name column."""
-    xlsx_bytes = _create_test_xlsx([
-        ["phone_number", "department", "salary"],
-        ["1234567890", "Engineering", "100000"],
-    ])
+    xlsx_bytes = _create_test_xlsx(
+        [
+            ["phone_number", "department", "salary"],
+            ["1234567890", "Engineering", "100000"],
+        ]
+    )
     form_data = {
         "event_name": "Test Event",
         "issuer_name": "Test Issuer",
         "issue_date": "2026-10-11",
     }
-    files = {"file": ("recipients.xlsx", io.BytesIO(xlsx_bytes), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    files = {
+        "file": (
+            "recipients.xlsx",
+            io.BytesIO(xlsx_bytes),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
 
     response = client.post("/api/v1/jobs/upload", data=form_data, files=files)
     assert response.status_code == 422
@@ -205,16 +235,24 @@ def test_upload_missing_name_column(client):
 
 def test_upload_invalid_email_format(client):
     """Ensures 422 error when a row has an invalid email address."""
-    xlsx_bytes = _create_test_xlsx([
-        ["recipient_name", "recipient_email"],
-        ["John Doe", "not-a-valid-email-address"],
-    ])
+    xlsx_bytes = _create_test_xlsx(
+        [
+            ["recipient_name", "recipient_email"],
+            ["John Doe", "not-a-valid-email-address"],
+        ]
+    )
     form_data = {
         "event_name": "Test Event",
         "issuer_name": "Test Issuer",
         "issue_date": "2026-10-11",
     }
-    files = {"file": ("recipients.xlsx", io.BytesIO(xlsx_bytes), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    files = {
+        "file": (
+            "recipients.xlsx",
+            io.BytesIO(xlsx_bytes),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
 
     response = client.post("/api/v1/jobs/upload", data=form_data, files=files)
     assert response.status_code == 422
@@ -223,17 +261,25 @@ def test_upload_invalid_email_format(client):
 
 def test_upload_duplicate_recipients(client):
     """Ensures 422 error when spreadsheet contains duplicate recipient entries."""
-    xlsx_bytes = _create_test_xlsx([
-        ["recipient_name", "recipient_email"],
-        ["Alice Cooper", "alice@example.com"],
-        ["Alice Cooper", "alice@example.com"],
-    ])
+    xlsx_bytes = _create_test_xlsx(
+        [
+            ["recipient_name", "recipient_email"],
+            ["Alice Cooper", "alice@example.com"],
+            ["Alice Cooper", "alice@example.com"],
+        ]
+    )
     form_data = {
         "event_name": "Test Event",
         "issuer_name": "Test Issuer",
         "issue_date": "2026-10-11",
     }
-    files = {"file": ("recipients.xlsx", io.BytesIO(xlsx_bytes), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    files = {
+        "file": (
+            "recipients.xlsx",
+            io.BytesIO(xlsx_bytes),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
 
     response = client.post("/api/v1/jobs/upload", data=form_data, files=files)
     assert response.status_code == 422
@@ -242,15 +288,23 @@ def test_upload_duplicate_recipients(client):
 
 def test_upload_empty_spreadsheet_no_rows(client):
     """Ensures 422 error when spreadsheet has only headers and no recipient rows."""
-    xlsx_bytes = _create_test_xlsx([
-        ["recipient_name", "recipient_email", "custom_remarks"],
-    ])
+    xlsx_bytes = _create_test_xlsx(
+        [
+            ["recipient_name", "recipient_email", "custom_remarks"],
+        ]
+    )
     form_data = {
         "event_name": "Test Event",
         "issuer_name": "Test Issuer",
         "issue_date": "2026-10-11",
     }
-    files = {"file": ("recipients.xlsx", io.BytesIO(xlsx_bytes), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    files = {
+        "file": (
+            "recipients.xlsx",
+            io.BytesIO(xlsx_bytes),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
 
     response = client.post("/api/v1/jobs/upload", data=form_data, files=files)
     assert response.status_code == 422

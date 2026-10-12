@@ -27,8 +27,19 @@ def download_certificate(
     db: Session = Depends(get_db),
 ):
     file_path, filename = job_service.get_certificate_file(db=db, certificate_id=certificate_id)
+    if not filename.lower().endswith(".pdf"):
+        filename = f"{filename}.pdf"
 
     disposition = "attachment" if as_attachment else "inline"
-    headers = {"Content-Disposition": f'{disposition}; filename="{filename}"'}
+    headers = {
+        "Content-Disposition": f'{disposition}; filename="{filename}"',
+        "Access-Control-Expose-Headers": "Content-Disposition",
+    }
 
-    return FileResponse(path=str(file_path), media_type="application/pdf", headers=headers)
+    return FileResponse(
+        path=str(file_path),
+        media_type="application/pdf",
+        filename=filename,
+        content_disposition_type=disposition,
+        headers=headers,
+    )

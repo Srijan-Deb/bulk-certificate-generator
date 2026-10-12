@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -15,6 +15,7 @@ from app.models.enums import JobStatus
 
 if TYPE_CHECKING:
     from app.models.certificate import CertificateRecord
+    from app.models.user import User
 
 
 class GenerationJob(Base):
@@ -22,6 +23,11 @@ class GenerationJob(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     status: Mapped[str] = mapped_column(String(32), index=True, default=JobStatus.PENDING.value, nullable=False)
+
+    # Optional Owner Link (Google OAuth User)
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # Event / Certificate Metadata
     event_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -47,7 +53,8 @@ class GenerationJob(Base):
         nullable=False,
     )
 
-    # Relationship to CertificateRecord
+    # Relationships
+    user: Mapped["User | None"] = relationship("User", back_populates="jobs")
     certificates: Mapped[list["CertificateRecord"]] = relationship(
         "CertificateRecord", back_populates="job", cascade="all, delete-orphan", order_by="CertificateRecord.created_at"
     )

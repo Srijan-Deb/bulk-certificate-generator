@@ -139,7 +139,7 @@ def test_worker_records_observability_metrics(client, db_session):
     # Verify Prometheus exposition includes recorded certificate latency histogram
     prom_text = metrics.export_prometheus_text()
     assert "certificate_render_duration_seconds_count" in prom_text
-    assert "jobs_completed_total{status=\"COMPLETED\"}" in prom_text
+    assert 'jobs_completed_total{status="COMPLETED"}' in prom_text
 
 
 def test_path_normalization_protects_cardinality(client):

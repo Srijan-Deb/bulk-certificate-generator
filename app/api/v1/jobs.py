@@ -7,8 +7,9 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, Up
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, verify_api_key
+from app.api.deps import get_current_user_optional, get_db, verify_api_key
 from app.core.metrics import metrics
+from app.models.user import User
 from app.schemas.job import (
     BulkCreateJobRequest,
     JobAcceptedResponse,
@@ -21,6 +22,56 @@ from app.services.spreadsheet_parser import spreadsheet_parser
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
 
+@router.get(
+    "",
+    response_model=list[JobStatusResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List Recent Generation Jobs",
+    description="Returns recent jobs, optionally filtered to the authenticated user.",
+)
+def list_jobs(
+    req: Request,
+    limit: int = Query(50, ge=1, le=100),
+    current_user: User | None = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    user_id = current_user.id if current_user else None
+    jobs = job_service.list_jobs(db=db, user_id=user_id, limit=limit)
+    results = []
+    for job in jobs:
+        progress = 0.0
+        if job.total_recipients > 0:
+            processed = job.successful_count + job.failed_count
+            progress = round((processed / job.total_recipients) * 100.0, 1)
+
+        zip_url = None
+        if job.successful_count > 0:
+            zip_url = str(req.url_for("download_job_certificates_zip", job_id=job.id))
+
+        status_counts = job_service.get_job_status_counts(db=db, job_id=job.id)
+        results.append(
+            JobStatusResponse(
+                job_id=job.id,
+                status=job.status,
+                event_name=job.event_name,
+                issuer_name=job.issuer_name,
+                issue_date=job.issue_date,
+                certificate_title=job.certificate_title,
+                total_recipients=job.total_recipients,
+                successful_count=job.successful_count,
+                failed_count=job.failed_count,
+                pending_count=status_counts.get("PENDING", 0),
+                processing_count=status_counts.get("PROCESSING", 0),
+                progress_percentage=progress,
+                created_at=job.created_at,
+                started_at=job.started_at,
+                completed_at=job.completed_at,
+                zip_download_url=zip_url,
+            )
+        )
+    return results
+
+
 @router.post(
     "",
     response_model=JobAcceptedResponse,
@@ -31,10 +82,12 @@ router = APIRouter(prefix="/jobs", tags=["Jobs"])
 def create_bulk_job(
     request: BulkCreateJobRequest,
     req: Request,
+    current_user: User | None = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
     _api_key: str | None = Depends(verify_api_key),
 ):
-    job = job_service.create_bulk_job(db=db, request=request)
+    user_id = current_user.id if current_user else None
+    job = job_service.create_bulk_job(db=db, request=request, user_id=user_id)
     metrics.record_job_submitted("json")
     status_url = str(req.url_for("get_job_status", job_id=job.id))
 
@@ -91,6 +144,7 @@ async def upload_recipients_job(
         description="Certificate Title (Heading printed on certificate)",
         examples=["Certificate of Completion"],
     ),
+    current_user: User | None = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
     _api_key: str | None = Depends(verify_api_key),
 ):
@@ -113,7 +167,8 @@ async def upload_recipients_job(
     )
 
     # Persist and queue the job
-    job = job_service.create_bulk_job(db=db, request=job_request)
+    user_id = current_user.id if current_user else None
+    job = job_service.create_bulk_job(db=db, request=job_request, user_id=user_id)
     metrics.record_job_submitted("upload")
     status_url = str(req.url_for("get_job_status", job_id=job.id))
 
@@ -241,5 +296,15 @@ def list_job_certificates(
 )
 def download_job_certificates_zip(job_id: str, db: Session = Depends(get_db)):
     zip_path = job_service.create_job_zip_archive(db=db, job_id=job_id)
-    return FileResponse(path=str(zip_path), media_type="application/zip", filename=f"certificates_job_{job_id}.zip")
-
+    filename = f"certificates_{job_id}.zip"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Access-Control-Expose-Headers": "Content-Disposition",
+    }
+    return FileResponse(
+        path=str(zip_path),
+        media_type="application/zip",
+        filename=filename,
+        content_disposition_type="attachment",
+        headers=headers,
+    )

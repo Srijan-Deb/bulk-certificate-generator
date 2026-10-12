@@ -24,6 +24,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.pdfgen import canvas
 
 from app.core.config import settings
+from app.schemas.template_config import TemplateLayoutConfig
 
 logger = logging.getLogger("bulk_certificate_generator.pdf")
 
@@ -89,7 +90,7 @@ class CertificateGenerator:
         """
         Converts a raw photo/scan of a signature (JPEG/PNG) into a clean,
         background-free transparent PNG suitable for vector certificates.
-        Handles EXIF rotation, vignette removal, and alpha thresholding.
+        Handles EXIF rotation, vignette removal, alpha thresholding, and existing transparency.
         """
         try:
             from PIL import Image, ImageOps
@@ -100,28 +101,54 @@ class CertificateGenerator:
             raw_img = Image.open(source_path)
             # Correct orientation from camera EXIF tags
             oriented = ImageOps.exif_transpose(raw_img)
+
+            # Check if image already has transparency (RGBA/LA/palette with alpha)
+            if oriented.mode in ("RGBA", "LA") or (oriented.mode == "P" and "transparency" in oriented.info):
+                rgba = oriented.convert("RGBA")
+                alpha_channel = rgba.split()[3]
+                min_alpha, _ = alpha_channel.getextrema()
+                if min_alpha < 240:
+                    bbox = rgba.getbbox()
+                    if bbox:
+                        pad = 10
+                        final_sig = rgba.crop(
+                            (
+                                max(0, bbox[0] - pad),
+                                max(0, bbox[1] - pad),
+                                min(rgba.width, bbox[2] + pad),
+                                min(rgba.height, bbox[3] + pad),
+                            )
+                        )
+                    else:
+                        final_sig = rgba
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    final_sig.save(output_path, format="PNG")
+                    logger.info("Preserved and saved transparent signature to %s", output_path)
+                    return output_path
+
+            # Image is opaque photo or scan (pen on paper)
             gray = oriented.convert("L")
 
             # Crop margin vignette/shadows if image is large enough
             w, h = gray.size
             if w > 400 and h > 200:
                 crop_box = (
-                    int(w * 0.15),
-                    int(h * 0.15),
+                    int(w * 0.08),
+                    int(h * 0.08),
                     int(w * 0.95),
                     int(h * 0.95),
                 )
                 gray = gray.crop(crop_box)
 
-            # Build smooth alpha mask: ink (<60) -> 255, paper (>115) -> 0
+            # Build smooth alpha mask: ink (<65) -> 255, paper (>120) -> 0
             lut = []
             for g in range(256):
-                if g >= 115:
+                if g >= 120:
                     lut.append(0)
-                elif g <= 60:
+                elif g <= 65:
                     lut.append(255)
                 else:
-                    t = (115 - g) / (115 - 60)
+                    t = (120 - g) / (120 - 65)
                     lut.append(int(255 * (t**1.2)))
 
             alpha = gray.point(lut, mode="L")
@@ -153,21 +180,50 @@ class CertificateGenerator:
 
     def get_signature_image_path(self) -> Path | None:
         """
-        Locates the authorized signature graphic.
+        Locates the authorized signature graphic with dynamic live fetching.
         Prioritizes:
-        1. settings.SIGNATURE_IMAGE_PATH if it exists.
-        2. templates/signature.png.
-        3. Raw image files in workspace root (e.g., IMG_20261011_230046.jpg.jpeg) converted on the fly.
+        1. settings.SIGNATURES_DIR (templates/signatures/):
+           - Checks for newer raw images (.jpg, .jpeg, .png, .webp).
+           - Auto-processes with Pillow into processed_signature.png if needed.
+           - Returns processed_signature.png or the latest signature graphic.
+        2. settings.SIGNATURE_IMAGE_PATH if it exists.
+        3. Raw image files in workspace root or templates/ converted on the fly.
         """
-        # Option 1: Configured path already exists
-        if settings.SIGNATURE_IMAGE_PATH and settings.SIGNATURE_IMAGE_PATH.exists():
-            return settings.SIGNATURE_IMAGE_PATH
+        signatures_dir = settings.SIGNATURES_DIR
+        processed_png = signatures_dir / "processed_signature.png"
+        default_png = settings.SIGNATURE_IMAGE_PATH
 
-        default_png = Path("./templates/signature.png")
-        if default_png.exists():
+        if signatures_dir.exists():
+            image_extensions = {".png", ".jpg", ".jpeg", ".webp"}
+            raw_candidates = [
+                p
+                for p in signatures_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in image_extensions and p.name != "processed_signature.png"
+            ]
+
+            if raw_candidates:
+                latest_raw = max(raw_candidates, key=lambda p: p.stat().st_mtime)
+                if not processed_png.exists() or latest_raw.stat().st_mtime > processed_png.stat().st_mtime:
+                    processed = self.process_raw_signature_image(latest_raw, processed_png)
+                    if processed and processed.exists():
+                        try:
+                            import shutil
+
+                            shutil.copyfile(processed_png, default_png)
+                        except Exception:
+                            pass
+                        return processed
+                elif processed_png.exists():
+                    return processed_png
+
+            if processed_png.exists():
+                return processed_png
+
+        # Option 2: Configured default path already exists
+        if default_png and default_png.exists():
             return default_png
 
-        # Option 2: Search for raw signature images to auto-process
+        # Option 3: Search for raw signature images in workspace root
         candidate_names = [
             "IMG_20261011_230046.jpg.jpeg",
             "signature.jpg",
@@ -177,9 +233,46 @@ class CertificateGenerator:
         for name in candidate_names:
             candidate = Path(name)
             if candidate.exists():
-                processed = self.process_raw_signature_image(candidate, default_png)
+                processed = self.process_raw_signature_image(candidate, processed_png)
                 if processed and processed.exists():
+                    try:
+                        import shutil
+
+                        shutil.copyfile(processed_png, default_png)
+                    except Exception:
+                        pass
                     return processed
+
+        return None
+
+    def get_background_template_path(self) -> Path | None:
+        """
+        Locates the custom certificate background template graphic with dynamic live fetching.
+        Prioritizes:
+        1. settings.BACKGROUNDS_DIR (templates/backgrounds/):
+           - Scans for latest image file (.png, .jpg, .jpeg, .webp).
+        2. settings.BACKGROUND_TEMPLATE_PATH (templates/background.png) if it exists.
+        3. Common candidate filenames in templates/ (background.jpg, template.png, etc.).
+        """
+        backgrounds_dir = settings.BACKGROUNDS_DIR
+        if backgrounds_dir.exists():
+            image_extensions = {".png", ".jpg", ".jpeg", ".webp"}
+            candidates = [
+                p
+                for p in backgrounds_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in image_extensions and not p.name.lower().startswith("readme")
+            ]
+            if candidates:
+                return max(candidates, key=lambda p: p.stat().st_mtime)
+
+        default_bg = settings.BACKGROUND_TEMPLATE_PATH
+        if default_bg and default_bg.exists():
+            return default_bg
+
+        for candidate_name in ["background.jpg", "background.jpeg", "template.png", "template.jpg"]:
+            cand = settings.TEMPLATES_DIR / candidate_name
+            if cand.exists():
+                return cand
 
         return None
 
@@ -195,10 +288,14 @@ class CertificateGenerator:
         custom_remarks: str | None = None,
         verification_code: str | None = None,
         allow_overwrite: bool = True,
+        background_path: Path | None = None,
+        signature_path: Path | None = None,
+        layout_config: TemplateLayoutConfig | None = None,
     ) -> Path:
         """
         Draws, verifies, and saves the PDF certificate.
-        Includes dynamic font scaling, verification code, and pypdf validation.
+        Supports dynamic layout configuration (AI Vision / Preset based) to prevent text collision
+        on pre-printed background templates. Includes font scaling, verification code, and pypdf validation.
         Raises RuntimeError on generation failure.
         """
         file_path = self.get_certificate_path(job_id, certificate_id)
@@ -206,6 +303,12 @@ class CertificateGenerator:
         # Overwrite protection check
         if file_path.exists() and not allow_overwrite:
             raise FileExistsError(f"Certificate file '{file_path}' already exists.")
+
+        # Load active layout configuration if not explicitly provided
+        if layout_config is None:
+            from app.services.llm_template_analyzer import llm_template_analyzer
+
+            layout_config = llm_template_analyzer.get_active_layout_config()
 
         # Sanitize input strings for PDF rendering
         clean_recipient = self.sanitize_text(recipient_name)
@@ -233,184 +336,236 @@ class CertificateGenerator:
         slate_muted = colors.HexColor("#475569")
         cream_bg = colors.HexColor("#FCFDFD")
 
-        # 1. Background Fill
-        c.setFillColor(cream_bg)
-        c.rect(0, 0, page_width, page_height, fill=1, stroke=0)
+        # Live Custom Background Template Check
+        bg_template_path = background_path or self.get_background_template_path()
+        has_custom_bg = bg_template_path is not None and bg_template_path.exists()
 
-        # 2. Decorative Outer Border (Navy)
+        if has_custom_bg:
+            try:
+                c.drawImage(
+                    str(bg_template_path),
+                    0,
+                    0,
+                    width=page_width,
+                    height=page_height,
+                    preserveAspectRatio=False,
+                )
+            except Exception as exc:
+                logger.warning("Failed to draw background template from %s: %s", bg_template_path, exc)
+                has_custom_bg = False
+
         margin = 28
-        c.setStrokeColor(navy_dark)
-        c.setLineWidth(3.5)
-        c.rect(margin, margin, page_width - (2 * margin), page_height - (2 * margin), fill=0, stroke=1)
+        if not has_custom_bg:
+            # 1. Background Fill (Executive Classic Cream)
+            c.setFillColor(cream_bg)
+            c.rect(0, 0, page_width, page_height, fill=1, stroke=0)
 
-        # 3. Decorative Inner Border (Gold)
-        inner_margin = margin + 8
-        c.setStrokeColor(gold_accent)
-        c.setLineWidth(1.2)
-        c.rect(
-            inner_margin,
-            inner_margin,
-            page_width - (2 * inner_margin),
-            page_height - (2 * inner_margin),
-            fill=0,
-            stroke=1,
-        )
+            # 2. Decorative Outer Border (Navy)
+            c.setStrokeColor(navy_dark)
+            c.setLineWidth(3.5)
+            c.rect(margin, margin, page_width - (2 * margin), page_height - (2 * margin), fill=0, stroke=1)
 
-        # 4. Corner Geometric Flourishes
-        c.setFillColor(gold_accent)
-        corners = [
-            (inner_margin, inner_margin),
-            (page_width - inner_margin, inner_margin),
-            (inner_margin, page_height - inner_margin),
-            (page_width - inner_margin, page_height - inner_margin),
-        ]
-        for cx, cy in corners:
-            c.circle(cx, cy, 3.5, fill=1, stroke=0)
+            # 3. Decorative Inner Border (Gold)
+            inner_margin = margin + 8
+            c.setStrokeColor(gold_accent)
+            c.setLineWidth(1.2)
+            c.rect(
+                inner_margin,
+                inner_margin,
+                page_width - (2 * inner_margin),
+                page_height - (2 * inner_margin),
+                fill=0,
+                stroke=1,
+            )
 
-        # 5. Header: Issuing Organization
-        c.setFillColor(gold_accent)
-        c.setFont("Helvetica-Bold", 13)
-        c.drawCentredString(page_width / 2.0, page_height - 75, clean_issuer.upper())
+            # 4. Corner Geometric Flourishes
+            c.setFillColor(gold_accent)
+            corners = [
+                (inner_margin, inner_margin),
+                (page_width - inner_margin, inner_margin),
+                (inner_margin, page_height - inner_margin),
+                (page_width - inner_margin, page_height - inner_margin),
+            ]
+            for cx, cy in corners:
+                c.circle(cx, cy, 3.5, fill=1, stroke=0)
 
-        # 6. Certificate Title
-        c.setFillColor(navy_dark)
-        c.setFont("Helvetica-Bold", 28)
-        c.drawCentredString(page_width / 2.0, page_height - 118, clean_title.upper())
+        # 5. Header: Issuing Organization (Render only if enabled)
+        if layout_config.render_issuer:
+            c.setFillColor(gold_accent)
+            c.setFont("Helvetica-Bold", 13)
+            c.drawCentredString(page_width / 2.0, page_height - 75, clean_issuer.upper())
 
-        # Title Accent Line
-        c.setStrokeColor(gold_accent)
-        c.setLineWidth(2)
-        accent_half_len = 80
-        c.line(
-            (page_width / 2.0) - accent_half_len,
-            page_height - 128,
-            (page_width / 2.0) + accent_half_len,
-            page_height - 128,
-        )
+        # 6. Certificate Title (Render only if enabled)
+        if layout_config.render_title:
+            c.setFillColor(navy_dark)
+            c.setFont("Helvetica-Bold", 28)
+            c.drawCentredString(page_width / 2.0, page_height - 118, clean_title.upper())
 
-        # 7. Presentation Subtitle
-        c.setFillColor(slate_muted)
-        c.setFont("Helvetica", 12)
-        c.drawCentredString(page_width / 2.0, page_height - 165, "THIS IS PROUDLY PRESENTED TO")
+        # Title Accent Line (Render only if enabled)
+        if layout_config.render_title_line:
+            c.setStrokeColor(gold_accent)
+            c.setLineWidth(2)
+            accent_half_len = 80
+            c.line(
+                (page_width / 2.0) - accent_half_len,
+                page_height - 128,
+                (page_width / 2.0) + accent_half_len,
+                page_height - 128,
+            )
 
-        # 8. Recipient Name with Dynamic Auto-Scaling for Long Names
+        # 7. Presentation Subtitle (Render only if enabled)
+        if layout_config.render_subtitle:
+            c.setFillColor(slate_muted)
+            c.setFont("Helvetica", 12)
+            c.drawCentredString(page_width / 2.0, page_height - 165, "THIS IS PROUDLY PRESENTED TO")
+
+        # 8. Recipient Name with Dynamic Auto-Scaling & Collision-Free Coordinate Positioning
         max_name_width = page_width - (2 * (margin + 60))
-        name_font_size = 30
+        name_font_size = layout_config.recipient_name_font_size
         font_name = "Helvetica-Bold"
         while c.stringWidth(clean_recipient, font_name, name_font_size) > max_name_width and name_font_size > 14:
             name_font_size -= 2
 
-        c.setFillColor(navy_dark)
+        try:
+            name_color = colors.HexColor(layout_config.recipient_name_color)
+        except Exception:
+            name_color = navy_dark
+
+        c.setFillColor(name_color)
         c.setFont(font_name, name_font_size)
-        c.drawCentredString(page_width / 2.0, page_height - 215, clean_recipient)
+        c.drawCentredString(page_width / 2.0, layout_config.recipient_name_y, clean_recipient)
 
-        # Underline for Recipient Name
-        c.setStrokeColor(gold_light)
-        c.setLineWidth(1)
-        name_line_half_len = min(220, max(120, int(c.stringWidth(clean_recipient, font_name, name_font_size) / 2) + 20))
-        c.line(
-            (page_width / 2.0) - name_line_half_len,
-            page_height - 225,
-            (page_width / 2.0) + name_line_half_len,
-            page_height - 225,
-        )
+        # Underline for Recipient Name (Render only if enabled)
+        if layout_config.render_recipient_underline:
+            c.setStrokeColor(gold_light)
+            c.setLineWidth(1)
+            name_line_half_len = min(
+                220, max(120, int(c.stringWidth(clean_recipient, font_name, name_font_size) / 2) + 20)
+            )
+            c.line(
+                (page_width / 2.0) - name_line_half_len,
+                layout_config.recipient_name_y - 10,
+                (page_width / 2.0) + name_line_half_len,
+                layout_config.recipient_name_y - 10,
+            )
 
-        # 9. Context Description
-        c.setFillColor(slate_muted)
-        c.setFont("Helvetica", 12)
-        c.drawCentredString(
-            page_width / 2.0, page_height - 260, "for successful completion and mastery of the curriculum in"
-        )
+        # 9. Context Description (Render only if enabled)
+        if layout_config.render_description:
+            c.setFillColor(slate_muted)
+            c.setFont("Helvetica", 12)
+            c.drawCentredString(
+                page_width / 2.0, page_height - 260, "for successful completion and mastery of the curriculum in"
+            )
 
-        # 10. Event / Course Name with Dynamic Auto-Scaling
-        max_event_width = page_width - (2 * (margin + 50))
-        event_font_size = 18
-        while c.stringWidth(clean_event, "Helvetica-Bold", event_font_size) > max_event_width and event_font_size > 11:
-            event_font_size -= 1
+        # 10. Event / Course Name with Dynamic Auto-Scaling (Render only if enabled)
+        if layout_config.render_event:
+            max_event_width = page_width - (2 * (margin + 50))
+            event_font_size = layout_config.event_font_size
+            while (
+                c.stringWidth(clean_event, "Helvetica-Bold", event_font_size) > max_event_width and event_font_size > 11
+            ):
+                event_font_size -= 1
 
-        c.setFillColor(navy_light)
-        c.setFont("Helvetica-Bold", event_font_size)
-        c.drawCentredString(page_width / 2.0, page_height - 295, clean_event)
+            try:
+                ev_color = colors.HexColor(layout_config.event_color)
+            except Exception:
+                ev_color = navy_light
 
-        # Optional Custom Remarks / Honors
-        if clean_remarks:
+            c.setFillColor(ev_color)
+            c.setFont("Helvetica-Bold", event_font_size)
+            c.drawCentredString(page_width / 2.0, layout_config.event_y, clean_event)
+
+        # Optional Custom Remarks / Honors (Render only if enabled)
+        if clean_remarks and layout_config.render_remarks:
             c.setFillColor(gold_accent)
             c.setFont("Helvetica-Oblique", 11)
-            c.drawCentredString(page_width / 2.0, page_height - 325, f"— {clean_remarks} —")
+            c.drawCentredString(page_width / 2.0, layout_config.event_y - 25, f"— {clean_remarks} —")
 
-        # 11. Official Seal / Badge Graphic (Center bottom vector drawing)
-        seal_x = page_width / 2.0
-        seal_y = 120
-        # Outer seal circle
-        c.setFillColor(gold_accent)
-        c.circle(seal_x, seal_y, 28, fill=1, stroke=0)
-        # Inner seal ring
-        c.setFillColor(navy_dark)
-        c.circle(seal_x, seal_y, 24, fill=1, stroke=0)
-        # Center core
-        c.setFillColor(gold_light)
-        c.circle(seal_x, seal_y, 20, fill=1, stroke=0)
-        c.setFillColor(navy_dark)
-        c.setFont("Helvetica-Bold", 8)
-        c.drawCentredString(seal_x, seal_y + 2, "VERIFIED")
-        c.drawCentredString(seal_x, seal_y - 7, "EXCELLENCE")
-
-        # 12. Left Column: Date of Issuance
-        left_col_x = 130
-        c.setStrokeColor(slate_muted)
-        c.setLineWidth(0.8)
-        c.line(left_col_x - 50, 105, left_col_x + 50, 105)
-        c.setFillColor(slate_muted)
-        c.setFont("Helvetica", 10)
-        c.drawCentredString(left_col_x, 88, "Date of Issuance")
-        c.setFillColor(navy_dark)
-        c.setFont("Helvetica-Bold", 10)
-        c.drawCentredString(left_col_x, 112, clean_date)
-
-        # 13. Right Column: Authorized Signatory
-        right_col_x = page_width - 130
-        c.setStrokeColor(slate_muted)
-        c.setLineWidth(0.8)
-        c.line(right_col_x - 60, 105, right_col_x + 60, 105)
-        c.setFillColor(slate_muted)
-        c.setFont("Helvetica", 10)
-        c.drawCentredString(right_col_x, 88, "Authorized Signatory")
-
-        sig_path = self.get_signature_image_path()
-        sig_drawn = False
-        if sig_path and sig_path.exists():
-            try:
-                sig_w = 115
-                sig_h = 52
-                sig_x = right_col_x - (sig_w / 2.0)
-                sig_y = 104
-                c.drawImage(
-                    str(sig_path),
-                    sig_x,
-                    sig_y,
-                    width=sig_w,
-                    height=sig_h,
-                    mask="auto",
-                    preserveAspectRatio=True,
-                )
-                sig_drawn = True
-                # Display issuing organization title beneath Authorized Signatory
-                c.setFillColor(navy_dark)
-                c.setFont("Helvetica", 8)
-                c.drawCentredString(right_col_x, 75, clean_issuer)
-            except Exception as exc:
-                logger.warning("Failed to draw signature image from %s: %s", sig_path, exc)
-
-        if not sig_drawn:
+        # 11. Official Seal / Badge Graphic (Render only if enabled)
+        if layout_config.render_seal and not has_custom_bg:
+            seal_x = page_width / 2.0
+            seal_y = 120
+            # Outer seal circle
+            c.setFillColor(gold_accent)
+            c.circle(seal_x, seal_y, 28, fill=1, stroke=0)
+            # Inner seal ring
             c.setFillColor(navy_dark)
-            c.setFont("Helvetica-Oblique", 11)
-            c.drawCentredString(right_col_x, 112, clean_issuer)
+            c.circle(seal_x, seal_y, 24, fill=1, stroke=0)
+            # Center core
+            c.setFillColor(gold_light)
+            c.circle(seal_x, seal_y, 20, fill=1, stroke=0)
+            c.setFillColor(navy_dark)
+            c.setFont("Helvetica-Bold", 8)
+            c.drawCentredString(seal_x, seal_y + 2, "VERIFIED")
+            c.drawCentredString(seal_x, seal_y - 7, "EXCELLENCE")
+
+        # 12. Date of Issuance
+        if layout_config.render_date:
+            date_x = layout_config.date_x
+            date_y = layout_config.date_y
+            if not has_custom_bg or layout_config.render_signatory_line:
+                c.setStrokeColor(slate_muted)
+                c.setLineWidth(0.8)
+                c.line(date_x - 50, date_y - 7, date_x + 50, date_y - 7)
+                c.setFillColor(slate_muted)
+                c.setFont("Helvetica", 10)
+                c.drawCentredString(date_x, date_y - 24, "Date of Issuance")
+
+            c.setFillColor(navy_dark)
+            c.setFont("Helvetica-Bold", 10)
+            c.drawCentredString(date_x, date_y, clean_date)
+
+        # 13. Authorized Signatory / Signature Graphic
+        if layout_config.render_signature:
+            sig_x_center = layout_config.signature_x
+            sig_y_center = layout_config.signature_y
+
+            if not has_custom_bg or layout_config.render_signatory_line:
+                c.setStrokeColor(slate_muted)
+                c.setLineWidth(0.8)
+                c.line(sig_x_center - 60, sig_y_center - 10, sig_x_center + 60, sig_y_center - 10)
+
+            if not has_custom_bg or layout_config.render_signatory_title:
+                c.setFillColor(slate_muted)
+                c.setFont("Helvetica", 10)
+                c.drawCentredString(sig_x_center, sig_y_center - 27, "Authorized Signatory")
+
+            sig_path = signature_path or self.get_signature_image_path()
+            sig_drawn = False
+            if sig_path and sig_path.exists():
+                try:
+                    sig_w = layout_config.signature_width
+                    sig_h = layout_config.signature_height
+                    c.drawImage(
+                        str(sig_path),
+                        sig_x_center - (sig_w / 2.0),
+                        sig_y_center - (sig_h / 2.0),
+                        width=sig_w,
+                        height=sig_h,
+                        mask="auto",
+                        preserveAspectRatio=True,
+                    )
+                    sig_drawn = True
+                    if not has_custom_bg or layout_config.render_signatory_title:
+                        c.setFillColor(navy_dark)
+                        c.setFont("Helvetica", 8)
+                        c.drawCentredString(sig_x_center, sig_y_center - 40, clean_issuer)
+                except Exception as exc:
+                    logger.warning("Failed to draw signature image from %s: %s", sig_path, exc)
+
+            if not sig_drawn and (not has_custom_bg or layout_config.render_signatory_title):
+                c.setFillColor(navy_dark)
+                c.setFont("Helvetica-Oblique", 11)
+                c.drawCentredString(sig_x_center, sig_y_center, clean_issuer)
 
         # 14. Bottom Verification Banner (Unique ID & Cryptographic Verification Code)
-        c.setFillColor(slate_muted)
-        c.setFont("Courier", 9)
-        verification_text = f"Certificate ID: {certificate_id}  |  Verification Code: {v_code}  |  Issuer: {clean_issuer}"
-        c.drawCentredString(page_width / 2.0, 42, verification_text)
+        if layout_config.render_verification_code:
+            c.setFillColor(slate_muted)
+            c.setFont("Courier", 8.5)
+            verification_text = (
+                f"Certificate ID: {certificate_id}  |  Verification Code: {v_code}  |  Issuer: {clean_issuer}"
+            )
+            c.drawCentredString(page_width / 2.0, layout_config.verification_code_y, verification_text)
 
         # Commit Canvas
         c.showPage()

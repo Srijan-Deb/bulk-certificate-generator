@@ -56,3 +56,6 @@ PDFs/
 # Raw uploaded camera photos (templates/signature.png is used instead)
 IMG_*
 *.jpeg
+
+# Upstream upgrade extracts
+Bulk_Certificate_Generator_Frontend_Upgrade/

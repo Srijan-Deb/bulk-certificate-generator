@@ -76,6 +76,9 @@ def readiness_probe(db: Session = Depends(get_db)):
 
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        content={"status": "not_ready", "database": "ok" if db_ok else "failed", "storage": "ok" if storage_ok else "failed"},
+        content={
+            "status": "not_ready",
+            "database": "ok" if db_ok else "failed",
+            "storage": "ok" if storage_ok else "failed",
+        },
     )
-

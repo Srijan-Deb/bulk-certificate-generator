@@ -75,9 +75,7 @@ class MetricsRegistry:
         with self._lock:
             self._http_requests_in_flight += 1
 
-    def record_http_request(
-        self, method: str, path: str, status_code: int, duration_seconds: float
-    ) -> None:
+    def record_http_request(self, method: str, path: str, status_code: int, duration_seconds: float) -> None:
         """Records an HTTP request outcome and latency distribution."""
         status_str = str(status_code)
         norm_method = method.upper()
@@ -248,6 +246,10 @@ class MetricsRegistry:
                 "avg_render_latency_ms": avg_cert_render_ms,
             },
             "storage": {
+                "provider": settings.STORAGE_PROVIDER,
+                "cloud_configured": (
+                    settings.STORAGE_PROVIDER.lower() in ("s3", "r2", "supabase") and bool(settings.S3_ACCESS_KEY_ID)
+                ),
                 "stored_pdf_count": files_count,
                 "bytes_used": storage_bytes,
                 "human_readable_size": human_storage,
@@ -320,9 +322,7 @@ class MetricsRegistry:
                     )
                     sum_val = self._http_duration_sum.get((method, path), 0.0)
                     cnt_val = self._http_duration_count.get((method, path), 0)
-                    lines.append(
-                        f'http_request_duration_seconds_sum{{method="{method}",path="{path}"}} {sum_val:.6f}'
-                    )
+                    lines.append(f'http_request_duration_seconds_sum{{method="{method}",path="{path}"}} {sum_val:.6f}')
                     lines.append(f'http_request_duration_seconds_count{{method="{method}",path="{path}"}} {cnt_val}')
 
             # 5. Jobs Submitted Total Counter
@@ -341,9 +341,7 @@ class MetricsRegistry:
             lines.append("# HELP certificates_generated_total Total certificates processed")
             lines.append("# TYPE certificates_generated_total counter")
             for (cert_status, err_code), count in sorted(self._certificates_generated_total.items()):
-                lines.append(
-                    f'certificates_generated_total{{status="{cert_status}",error_code="{err_code}"}} {count}'
-                )
+                lines.append(f'certificates_generated_total{{status="{cert_status}",error_code="{err_code}"}} {count}')
 
             # 8. Certificate Rendering Latency Histogram
             if self._cert_render_count > 0:

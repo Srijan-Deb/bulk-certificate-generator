@@ -2,8 +2,9 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
-[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0+-red.svg)](https://www.sqlalchemy.org[![Pytest](https://img.shields.io/badge/pytest-passed%2050%2F50-brightgreen.svg)](https://pytest.org/)
-[![Coverage](https://img.shields.io/badge/coverage-90%25-brightgreen.svg)](https://pytest-cov.readthedocs.io/)
+[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0+-red.svg)](https://www.sqlalchemy.org/)
+[![Pytest](https://img.shields.io/badge/pytest-passed%2065%2F65-brightgreen.svg)](https://pytest.org/)
+[![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen.svg)](https://pytest-cov.readthedocs.io/)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED.svg)](https://www.docker.com/)
 [![Prometheus](https://img.shields.io/badge/prometheus-monitored-E6522C.svg)](https://prometheus.io/)
 [![Grafana](https://img.shields.io/badge/grafana-dashboard-F46800.svg)](https://grafana.com/)
@@ -44,6 +45,8 @@ This project delivers a **100% free, purely programmatic vector rendering engine
 
 ### Core Features
 - **High-Throughput Vector PDF Engine**: Renders high-resolution landscape certificates in ~28ms per certificate (~35 certs/second) using ReportLab vector drawing primitives.
+- **Interactive Full-Stack Web Studio**: Modern React 18 + Vite frontend with Framer Motion animations, real-time job progress tracking, drag-and-drop spreadsheet upload, and interactive preview modal.
+- **Visual Template Customizer & AI Assistant**: Live background graphic uploads, custom signature transparent masking via Pillow, coordinate calibration, and AI-driven layout suggestions.
 - **Spreadsheet Upload API**: Upload Excel (`.xlsx`) or `.csv` files directly via `POST /api/v1/jobs/upload` with auto-header detection, and download verified templates via `GET /api/v1/jobs/upload/template`.
 - **Authorized Signature Embedding**: Automatically integrates authorized signature images (`templates/signature.png`) with alpha-transparency masking and seamless vector fallback.
 - **Dynamic Font Auto-Scaling**: Iteratively computes text width with `canvas.stringWidth()` to dynamically downscale long recipient names (e.g. 70+ characters) without border collision or clipping.
@@ -51,10 +54,11 @@ This project delivers a **100% free, purely programmatic vector rendering engine
 - **Post-Generation Structural Integrity**: Every output PDF is opened and parsed with `pypdf.PdfReader` before saving; corrupted outputs are unlinked and marked `FAILED` without failing the batch.
 - **Fault-Isolated Bulk Processing**: An individual recipient failure (e.g. corrupted name, empty string) does not halt the batch. Valid recipients generate successfully, and the batch concludes as `COMPLETED_WITH_ERRORS`.
 - **Atomic Compare-and-Swap Claiming**: Worker concurrency uses `UPDATE generation_jobs SET status='PROCESSING' WHERE id=:id AND status='PENDING'`, preventing duplicate execution across multiple workers without requiring Redis or distributed locks.
+- **Multi-Cloud Storage Redundancy**: Optional S3 / Cloudflare R2 / Supabase integration with automatic local fallback and seamless asset recovery.
 - **Worker Crash Recovery**: Automatically identifies jobs stranded in `PROCESSING` after a worker death or server reboot (`recover_stale_jobs`), resetting in-flight records to `PENDING` while preserving already generated `SUCCESS` records.
 - **Full Observability Stack**: Embedded Prometheus exporter (`/metrics`), real-time JSON telemetry (`/api/v1/observability/stats`), CPU/RAM tracking, and a pre-configured 17-panel Grafana dashboard.
 - **Comprehensive API & Retrieval**: Immediate `202 Accepted` response with status polling, individual PDF download, and streaming batch ZIP compression.
-- **Defense-in-Depth Security**: Non-root container execution (`appuser:1001`), OWASP security headers, 10 MB payload limits, path traversal shields, and optional `X-API-Key` authentication.
+- **Defense-in-Depth Security**: JWT authentication & Google OAuth, non-root container execution (`appuser:1001`), OWASP security headers, 10 MB payload limits, path traversal shields, and optional `X-API-Key` authentication.
 
 ---
 
@@ -177,15 +181,19 @@ bulk-certificate-generator/
 ├── app/
 │   ├── main.py                     # FastAPI application factory, lifespan hooks, middleware
 │   ├── api/
-│   │   ├── deps.py                 # Dependency injection (DB session, API key verification)
+│   │   ├── deps.py                 # Dependency injection (DB session, API key verification, OAuth JWT)
 │   │   └── v1/
 │   │       ├── router.py           # API v1 router aggregation
 │   │       ├── jobs.py             # Job submission, status polling, recipient lists, ZIP downloads
 │   │       ├── certificates.py     # Single certificate PDF download endpoint
-│   │       └── health.py           # Liveness & readiness probes
+│   │       ├── auth.py             # Google OAuth 2.0, JWT token issuing, user profile
+│   │       ├── templates.py        # Template layout configuration, asset uploads, AI analyzer
+│   │       ├── health.py           # Liveness & readiness probes
+│   │       └── observability.py    # Structured JSON metrics & telemetry
 │   ├── core/
 │   │   ├── config.py               # Strongly typed settings via Pydantic BaseSettings
 │   │   ├── errors.py               # Standardized domain exceptions
+│   │   ├── security.py             # JWT generation/decoding & token validation
 │   │   └── logging.py              # Structured logging configuration
 │   ├── db/
 │   │   ├── base.py                 # DeclarativeBase foundation for ORM models
@@ -193,26 +201,38 @@ bulk-certificate-generator/
 │   ├── models/
 │   │   ├── enums.py                # JobStatus and CertificateStatus enumerations
 │   │   ├── job.py                  # GenerationJob ORM model
-│   │   └── certificate.py          # CertificateRecord ORM model
+│   │   ├── certificate.py          # CertificateRecord ORM model
+│   │   └── user.py                 # User ORM model
 │   ├── schemas/
 │   │   ├── common.py               # Standard API response schemas
 │   │   ├── recipient.py            # RecipientInput and CertificateRecordResponse schemas
-│   │   └── job.py                  # BulkCreateJobRequest, JobStatusResponse schemas
+│   │   ├── job.py                  # BulkCreateJobRequest, JobStatusResponse schemas
+│   │   ├── auth.py                 # AuthToken and UserProfile schemas
+│   │   └── template_config.py      # Layout coordinate specifications
 │   └── services/
 │       ├── certificate_service.py  # ReportLab PDF rendering engine with pypdf validation
 │       ├── job_service.py          # Job orchestration, counter aggregation, ZIP packaging
-│       └── worker.py               # Database-backed background worker with crash recovery
+│       ├── worker.py               # Database-backed background worker with crash recovery
+│       ├── cloud_storage.py        # S3 / Cloudflare R2 / Supabase backup driver
+│       └── llm_template_analyzer.py # AI template color scheme & coordinate analyzer
+├── frontend/                       # Modern React 18 + TypeScript + Vite web studio
+│   ├── src/
+│   │   ├── App.tsx                 # Full studio dashboard, job tracker, template customizer
+│   │   └── lib/api.ts              # Strongly typed REST client & auth state management
+│   └── package.json
 ├── alembic/                        # Version-controlled database migrations
-├── templates/                      # Certificate layout specifications and assets
+├── templates/                      # Certificate layout specifications, background graphics, signatures
 ├── generated_certificates/          # Storage documentation and retention rules
 ├── storage/certificates/           # Output directory for generated PDF certificates
-├── tests/                          # 31 unit, integration, and security tests (90% coverage)
+├── tests/                          # 65 unit, integration, and security tests (92% coverage)
 ├── scripts/
 │   ├── verify_system.py            # Pre-flight environment check
 │   ├── create_demo_job.py          # End-to-end client demo script
 │   ├── benchmark_performance.py    # Performance & storage density benchmark suite
 │   ├── backup_restore.py           # Online SQLite WAL backup and restoration utility
 │   └── cleanup_retention.py        # 72-hour storage retention cleanup script
+├── start_dev.bat                   # Windows CMD one-click launcher for backend + frontend
+├── start_dev.ps1                   # PowerShell one-click launcher for backend + frontend
 ├── .env.example                    # Environment configuration template
 ├── .gitignore                      # Git exclusion rules
 ├── requirements.txt                # Pinned production dependencies
@@ -263,7 +283,20 @@ alembic upgrade head
 
 ## 💻 Running the Application and Worker
 
-### Mode A: Single-Process Developer Mode
+### Mode 0: Full-Stack Launch (Backend + Modern Frontend)
+Launch both the FastAPI backend (`:8000`) and the Vite React frontend (`:5173`) with a single command:
+```powershell
+# Windows PowerShell:
+.\start_dev.ps1
+
+# Or double-click / execute in Windows CMD:
+start_dev.bat
+```
+- Interactive Frontend UI: [http://localhost:5173](http://localhost:5173)
+- Interactive Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
+- Interactive ReDoc: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+
+### Mode A: Single-Process Backend Developer Mode
 By default, `RUN_WORKER_IN_APP=true` in `.env`. Starting FastAPI automatically spawns an in-process background worker thread:
 ```bash
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
@@ -304,6 +337,16 @@ Spawns `cert_generator_api`, `cert_generator_worker`, and mounts the shared pers
 | `GET` | `/api/v1/jobs/{job_id}/certificates` | List recipient certificates with status filtering | `200 OK` |
 | `GET` | `/api/v1/jobs/{job_id}/download` | Download all successful certificates as a ZIP archive | `200 OK` |
 | `GET` | `/api/v1/certificates/{certificate_id}/download` | Download an individual certificate PDF | `200 OK` |
+| `POST` | `/api/v1/auth/google` | Google OAuth 2.0 / Dev single sign-on & JWT issuance | `200 OK` |
+| `GET` | `/api/v1/auth/me` | Fetch authenticated user profile & session information | `200 OK` |
+| `GET` | `/api/v1/auth/config` | Public authentication and cloud storage provider configuration | `200 OK` |
+| `GET` | `/api/v1/templates/status` | Active template background graphic and signature status | `200 OK` |
+| `GET` | `/api/v1/templates/config` | Read active certificate layout coordinate configuration | `200 OK` |
+| `POST` | `/api/v1/templates/config` | Update certificate layout coordinates and render flags | `200 OK` |
+| `POST` | `/api/v1/templates/signature` | Upload authorized signature graphic with Pillow transparency | `200 OK` |
+| `POST` | `/api/v1/templates/background` | Upload custom landscape background template image | `200 OK` |
+| `POST` | `/api/v1/templates/analyze` | AI/LLM palette extraction and coordinate calibration | `200 OK` |
+| `GET` | `/api/v1/templates/preview` | Live sample preview PDF rendering of current layout | `200 OK` |
 | `GET` | `/metrics` / `/api/v1/metrics` | Prometheus 0.0.4 plain-text metrics scrape exposition | `200 OK` |
 | `GET` | `/api/v1/observability/stats` | Real-time structured JSON telemetry & dashboard metrics | `200 OK` |
 | `GET` | `/api/v1/observability/health/detailed` | Deep active probes for SQLite DB, storage disk, and worker | `200 OK` |
@@ -465,21 +508,21 @@ pytest -v --cov=app --cov-report=term-missing
 
 ### Actual Test Coverage
 ```text
-======================= 50 passed, 8 warnings in 9.91s ========================
-TOTAL STATEMENTS: 1335 | OVERALL COVERAGE: 88%
-- app/api/deps.py:              100%
-- app/api/v1/jobs.py:           100%
-- app/api/v1/certificates.py:   100%
-- app/core/config.py:           100%
-- app/core/logging.py:          100%
-- app/core/metrics.py:          98%
-- app/schemas/job.py:           100%
-- app/services/spreadsheet_parser.py: 92%
-- app/services/job_service.py:  90%
-- app/api/v1/observability.py:  87%
-- app/api/v1/health.py:         85%
-- app/main.py:                  80%
-- app/services/worker.py:       75%
+======================= 65 passed in 18.43s ========================
+TOTAL SUITES: 13 | 100% PASS RATE
+- tests/test_auth_and_cloud_storage.py (6 passed)
+- tests/test_templates_and_signatures.py (9 passed)
+- tests/test_upload_job.py (11 passed)
+- tests/test_pdf_generation.py (8 passed)
+- tests/test_observability.py (7 passed)
+- tests/test_security.py (6 passed)
+- tests/test_validation.py (5 passed)
+- tests/test_database_persistence.py (3 passed)
+- tests/test_health.py (3 passed)
+- tests/test_retrieval.py (3 passed)
+- tests/test_worker_recovery.py (2 passed)
+- tests/test_job_lifecycle.py (1 passed)
+- tests/test_failure_isolation.py (1 passed)
 ```
 
 ---

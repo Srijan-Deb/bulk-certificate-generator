@@ -34,6 +34,7 @@ class CertificateRecord(Base):
     certificate_id: Mapped[str | None] = mapped_column(String(100), unique=True, index=True, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default=CertificateStatus.PENDING.value, index=True, nullable=False)
     file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cloud_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Failure / Error Tracking
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
